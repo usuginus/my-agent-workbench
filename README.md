@@ -29,7 +29,7 @@ Slack でメンションやコマンドを受けると応答する bot です。
    npm install
    ```
 
-2. 環境変数を用意（`.env` を作成）
+2. 環境変数を用意（`.env` を編集）
 
    ```bash
    SLACK_BOT_TOKEN=...
