@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { App } from "@slack/bolt";
-import { planNomikai, respondMention } from "./planner.js";
+import { planNomikai, respondMention, formatSearchConditions } from "./planner.js";
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -14,7 +14,8 @@ const WORKDIR = process.env.CODEX_WORKDIR || process.cwd();
 app.command("/nomikai", async ({ command, ack, say }) => {
   await ack();
 
-  await say("🤔 候補を考え中…");
+  const cond = formatSearchConditions(command.text || "");
+  await say(`🤔 <@${command.user_id}> 候補を考え中…\n${cond}`);
 
   const result = await planNomikai({
     slackText: command.text || "",

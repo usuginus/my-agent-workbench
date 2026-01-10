@@ -34,7 +34,7 @@ ${JSON.stringify(slackText)}
 `.trim();
 }
 
-function parseSlackText(slackText) {
+export function parseSlackText(slackText) {
   const text = (slackText || "").trim();
   const parts = text.split(/\s+/).filter(Boolean);
   const [area, budget, people, time] = parts;
@@ -44,6 +44,11 @@ function parseSlackText(slackText) {
     people: people || "未指定",
     time: time || "未指定",
   };
+}
+
+export function formatSearchConditions(slackText) {
+  const cond = parseSlackText(slackText);
+  return `🔎 検索条件 エリア=${cond.area} / 予算=${cond.budget}円/人 / 人数=${cond.people}名 / 開始=${cond.time}`;
 }
 
 function tryParseJson(stdout) {
@@ -57,14 +62,10 @@ function tryParseJson(stdout) {
   return JSON.parse(jsonText);
 }
 
-function formatSlackText(plan, slackText) {
-  const cond = parseSlackText(slackText);
+function formatSlackText(plan) {
   const lines = [];
   const toSlackLinks = (text) =>
     text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "<$2|$1>");
-  lines.push(
-    `🔎 *検索条件* エリア=${cond.area} / 予算=${cond.budget}円/人 / 人数=${cond.people}名 / 開始=${cond.time}`
-  );
   lines.push(`🍻 *飲み会候補（3件）*`);
   for (const [i, c] of plan.candidates.entries()) {
     const tabelogLink = toSlackLinks(`[食べログ](${c.tabelog_url})`);
@@ -101,14 +102,14 @@ export async function planNomikai({ slackText, workdir }) {
   try {
     const { stdout } = await runCodexExec({ prompt: prompt1, cwd: workdir });
     const plan = tryParseJson(stdout);
-    return { ok: true, text: formatSlackText(plan, slackText), raw: plan };
+    return { ok: true, text: formatSlackText(plan), raw: plan };
   } catch (e1) {
     // 1回だけ再試行：JSON only をさらに強く
     const prompt2 = `${prompt1}\n\nIMPORTANT: Output JSON ONLY. Do not include any other text.`;
     try {
       const { stdout } = await runCodexExec({ prompt: prompt2, cwd: workdir });
       const plan = tryParseJson(stdout);
-      return { ok: true, text: formatSlackText(plan, slackText), raw: plan };
+      return { ok: true, text: formatSlackText(plan), raw: plan };
     } catch (e2) {
       const hint = diagnoseFailure(e2);
       console.error("planNomikai failed", {
