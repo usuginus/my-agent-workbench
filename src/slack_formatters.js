@@ -1,8 +1,9 @@
+export function stripBotMention(text) {
+  return (text || "").replace(/^<@[^>]+>\s*/, "").trim();
+}
+
 function toSlackLinks(text) {
-  return (text || "").replace(
-    /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
-    "<$2|$1>"
-  );
+  return (text || "").replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "<$2|$1>");
 }
 
 export function toSlackMarkdown(text) {

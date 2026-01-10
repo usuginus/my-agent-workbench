@@ -8,12 +8,15 @@ const JSON_SCHEMA = `{
   "final_message": string
 }`;
 
-function buildNomikaiPrompt(slackText) {
+function buildNomikaiPrompt(slackText, slackContext) {
   return `
 You are a nomikai planning agent.
 
 User request (raw Slack text):
 ${JSON.stringify(slackText)}
+
+Slack context (JSON, if available):
+${JSON.stringify(slackContext || null)}
 
 Rules:
 - Output VALID JSON ONLY. No markdown. No prose.
@@ -25,13 +28,16 @@ ${JSON_SCHEMA}
 `.trim();
 }
 
-function buildMentionPrompt(slackText) {
+function buildMentionPrompt(slackText, slackContext) {
   return `
 You are a helpful assistant responding in a Slack channel.
 Respond naturally in Japanese to the user's mention. Be concise and friendly.
 
 User message:
 ${JSON.stringify(slackText)}
+
+Slack context (JSON, if available):
+${JSON.stringify(slackContext || null)}
 `.trim();
 }
 
@@ -60,8 +66,8 @@ function diagnoseFailure(err) {
   return "Codex の実行に失敗しました。サーバーログの stderr を確認してください。";
 }
 
-export async function planNomikai({ slackText, workdir }) {
-  const prompt1 = buildNomikaiPrompt(slackText);
+export async function planNomikai({ slackText, workdir, slackContext }) {
+  const prompt1 = buildNomikaiPrompt(slackText, slackContext);
 
   try {
     const { stdout } = await runCodexExec({ prompt: prompt1, cwd: workdir });
@@ -99,8 +105,8 @@ export async function planNomikai({ slackText, workdir }) {
   }
 }
 
-export async function respondMention({ slackText, workdir }) {
-  const prompt = buildMentionPrompt(slackText);
+export async function respondMention({ slackText, workdir, slackContext }) {
+  const prompt = buildMentionPrompt(slackText, slackContext);
   try {
     const { stdout } = await runCodexExec({ prompt, cwd: workdir });
     const text = toSlackMarkdown((stdout || "").trim());

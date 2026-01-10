@@ -47,7 +47,7 @@ Slack でメンションやコマンドを受けると応答する bot です。
 - Socket Mode を有効化
 - Slash Commands: `/nomikai`
 - Event Subscriptions: `app_mention`
-- Bot Token Scopes: `chat:write`
+- Bot Token Scopes: `chat:write`, `conversations:read`, `channels:history`, `users:read`
 - Bot をチャンネルに追加
 
 ## Usage
@@ -66,6 +66,7 @@ Slack でメンションやコマンドを受けると応答する bot です。
 - `src/nomikai.js` : /nomikai のプロンプト生成と結果整形
 - `src/slack_formatters.js` : Slack 表示用の整形ユーティリティ
 - `src/codex_client.js` : Codex CLI 実行ラッパー
+- `src/slack_api.js` : Slack Web API から文脈情報を取得
 
 ## Codex CLI 設定（任意）
 
