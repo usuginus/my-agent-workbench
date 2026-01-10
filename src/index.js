@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { App } from "@slack/bolt";
-import { planNomikai, respondMention, formatSearchConditions } from "./planner.js";
+import { formatSearchConditions } from "./slack_formatters.js";
+import { planNomikai, respondMention } from "./nomikai.js";
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,

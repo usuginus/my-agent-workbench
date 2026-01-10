@@ -60,6 +60,13 @@ Slack でメンションやコマンドを受けると応答する bot です。
 /nomikai 渋谷 5000 4 19:30
 ```
 
+## Key Files
+
+- `src/index.js` : Slack イベントの入口
+- `src/nomikai.js` : /nomikai のプロンプト生成と結果整形
+- `src/slack_formatters.js` : Slack 表示用の整形ユーティリティ
+- `src/codex_client.js` : Codex CLI 実行ラッパー
+
 ## Codex CLI 設定（任意）
 
 環境変数で挙動を調整できます。

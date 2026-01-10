@@ -1,4 +1,5 @@
-import { runCodexExec } from "./codex.js";
+import { runCodexExec } from "./codex_client.js";
+import { formatNomikaiMessage, toSlackMarkdown } from "./slack_formatters.js";
 
 const JSON_SCHEMA = `{
   "candidates": [
@@ -7,7 +8,7 @@ const JSON_SCHEMA = `{
   "final_message": string
 }`;
 
-function buildPrompt(slackText) {
+function buildNomikaiPrompt(slackText) {
   return `
 You are a nomikai planning agent.
 
@@ -34,23 +35,6 @@ ${JSON.stringify(slackText)}
 `.trim();
 }
 
-export function parseSlackText(slackText) {
-  const text = (slackText || "").trim();
-  const parts = text.split(/\s+/).filter(Boolean);
-  const [area, budget, people, time] = parts;
-  return {
-    area: area || "未指定",
-    budget: budget || "未指定",
-    people: people || "未指定",
-    time: time || "未指定",
-  };
-}
-
-export function formatSearchConditions(slackText) {
-  const cond = parseSlackText(slackText);
-  return `🔎 検索条件 エリア=${cond.area} / 予算=${cond.budget}円/人 / 人数=${cond.people}名 / 開始=${cond.time}`;
-}
-
 function tryParseJson(stdout) {
   // codexの出力に余計な行が混ざることがあるので、最初の { から最後の } までを拾う
   const start = stdout.indexOf("{");
@@ -60,50 +44,6 @@ function tryParseJson(stdout) {
   }
   const jsonText = stdout.slice(start, end + 1);
   return JSON.parse(jsonText);
-}
-
-function toSlackLinks(text) {
-  return (text || "").replace(
-    /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
-    "<$2|$1>"
-  );
-}
-
-function toSlackMarkdown(text) {
-  let out = text || "";
-  // Headings: "# Title" -> "*Title*"
-  out = out.replace(/^\s{0,3}#{1,6}\s+(.+)$/gm, "*$1*");
-  // Bold: "**text**" -> "*text*"
-  out = out.replace(/\*\*(.+?)\*\*/g, "*$1*");
-  // Italic: "_text_" -> "_text_" (Slack supports underscores; keep)
-  // List bullets: "- item" or "* item" -> "• item"
-  out = out.replace(/^\s*[-*]\s+/gm, "• ");
-  // Inline code: keep as-is (Slack supports backticks)
-  // Code blocks: keep as-is (Slack supports triple backticks)
-  out = toSlackLinks(out);
-  return out.trim();
-}
-
-function formatSlackText(plan) {
-  const lines = [];
-  lines.push(`🍻 *飲み会候補（3件）*`);
-  for (const [i, c] of plan.candidates.entries()) {
-    const rawReason = c.reason || "";
-    const hasUrl = /https?:\/\//.test(rawReason);
-    const reasonWithLink = hasUrl
-      ? rawReason
-      : `${rawReason} ([食べログ](${c.tabelog_url}))`;
-    const reason = toSlackLinks(reasonWithLink);
-    lines.push(
-      `*${i + 1}. ${c.name}* （目安 ¥${c.budget_yen} / 徒歩${c.walk_min}分 / ${
-        c.vibe
-      }）\n・${reason}`
-    );
-  }
-  if (plan.final_message) {
-    lines.push(`\n📣 *集合メッセージ案*\n${toSlackLinks(plan.final_message)}`);
-  }
-  return lines.join("\n");
 }
 
 function diagnoseFailure(err) {
@@ -121,19 +61,19 @@ function diagnoseFailure(err) {
 }
 
 export async function planNomikai({ slackText, workdir }) {
-  const prompt1 = buildPrompt(slackText);
+  const prompt1 = buildNomikaiPrompt(slackText);
 
   try {
     const { stdout } = await runCodexExec({ prompt: prompt1, cwd: workdir });
     const plan = tryParseJson(stdout);
-    return { ok: true, text: formatSlackText(plan), raw: plan };
+    return { ok: true, text: formatNomikaiMessage(plan), raw: plan };
   } catch (e1) {
     // 1回だけ再試行：JSON only をさらに強く
     const prompt2 = `${prompt1}\n\nIMPORTANT: Output JSON ONLY. Do not include any other text.`;
     try {
       const { stdout } = await runCodexExec({ prompt: prompt2, cwd: workdir });
       const plan = tryParseJson(stdout);
-      return { ok: true, text: formatSlackText(plan), raw: plan };
+      return { ok: true, text: formatNomikaiMessage(plan), raw: plan };
     } catch (e2) {
       const hint = diagnoseFailure(e2);
       console.error("planNomikai failed", {
