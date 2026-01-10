@@ -62,10 +62,30 @@ function tryParseJson(stdout) {
   return JSON.parse(jsonText);
 }
 
+function toSlackLinks(text) {
+  return (text || "").replace(
+    /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+    "<$2|$1>"
+  );
+}
+
+function toSlackMarkdown(text) {
+  let out = text || "";
+  // Headings: "# Title" -> "*Title*"
+  out = out.replace(/^\s{0,3}#{1,6}\s+(.+)$/gm, "*$1*");
+  // Bold: "**text**" -> "*text*"
+  out = out.replace(/\*\*(.+?)\*\*/g, "*$1*");
+  // Italic: "_text_" -> "_text_" (Slack supports underscores; keep)
+  // List bullets: "- item" or "* item" -> "• item"
+  out = out.replace(/^\s*[-*]\s+/gm, "• ");
+  // Inline code: keep as-is (Slack supports backticks)
+  // Code blocks: keep as-is (Slack supports triple backticks)
+  out = toSlackLinks(out);
+  return out.trim();
+}
+
 function formatSlackText(plan) {
   const lines = [];
-  const toSlackLinks = (text) =>
-    text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "<$2|$1>");
   lines.push(`🍻 *飲み会候補（3件）*`);
   for (const [i, c] of plan.candidates.entries()) {
     const rawReason = c.reason || "";
@@ -143,7 +163,7 @@ export async function respondMention({ slackText, workdir }) {
   const prompt = buildMentionPrompt(slackText);
   try {
     const { stdout } = await runCodexExec({ prompt, cwd: workdir });
-    const text = (stdout || "").trim();
+    const text = toSlackMarkdown((stdout || "").trim());
     if (!text) {
       throw new Error("Empty response from codex.");
     }
