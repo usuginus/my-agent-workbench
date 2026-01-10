@@ -39,7 +39,7 @@ app.event("app_mention", async ({ event, say }) => {
 
   const cleaned = stripBotMention(event.text);
   if (!cleaned) {
-    await say("何かお手伝いしましょうか？");
+    await say(`<@${event.user}> 何かお手伝いしましょうか？`);
     return;
   }
 
@@ -56,7 +56,7 @@ app.event("app_mention", async ({ event, say }) => {
     slackContext,
   });
 
-  await say(result.text);
+  await say(`<@${event.user}> ${result.text}`);
 });
 
 await app.start();
