@@ -68,12 +68,16 @@ function formatSlackText(plan) {
     text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "<$2|$1>");
   lines.push(`🍻 *飲み会候補（3件）*`);
   for (const [i, c] of plan.candidates.entries()) {
-    const tabelogLink = toSlackLinks(`[食べログ](${c.tabelog_url})`);
-    const reason = toSlackLinks(c.reason || "");
+    const rawReason = c.reason || "";
+    const hasUrl = /https?:\/\//.test(rawReason);
+    const reasonWithLink = hasUrl
+      ? rawReason
+      : `${rawReason} ([食べログ](${c.tabelog_url}))`;
+    const reason = toSlackLinks(reasonWithLink);
     lines.push(
       `*${i + 1}. ${c.name}* （目安 ¥${c.budget_yen} / 徒歩${c.walk_min}分 / ${
         c.vibe
-      }）\n・${reason}\n・${tabelogLink}`
+      }）\n・${reason}`
     );
   }
   if (plan.final_message) {
