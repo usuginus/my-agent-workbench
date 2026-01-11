@@ -1,11 +1,11 @@
 {
-  "name": "my-agent-workbench",
+  "name": "codex-echo-in-slack",
   "version": "1.0.0",
-  "main": "dist/index.js",
+  "main": "dist/app/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "node --loader ts-node/esm src/index.ts",
+    "start": "node dist/app/index.js",
+    "dev": "node --loader ts-node/esm src/app/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

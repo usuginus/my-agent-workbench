@@ -1,8 +1,9 @@
 import "dotenv/config";
 import { App } from "@slack/bolt";
-import { stripBotMention, formatSearchConditions } from "./slack_formatters.js";
-import { planNomikai, respondMention } from "./nomikai.js";
-import { buildSlackContext } from "./slack_api.js";
+import { stripBotMention } from "../integrations/slack_formatters.js";
+import { planHangout, formatSearchConditions } from "../services/hangout.js";
+import { respondMention } from "../services/mention.js";
+import { buildSlackContext } from "../integrations/slack_api.js";
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -17,7 +18,7 @@ app.command("/nomikai", async ({ command, ack, say }) => {
   await ack();
 
   const cond = formatSearchConditions(command.text || "");
-  await say(`🤔 <@${command.user_id}> 候補を考え中…\n${cond}`);
+  await say(`🤔 <@${command.user_id}> 候補を考え中...\n${cond}`);
 
   const slackContext = await buildSlackContext({
     token: process.env.SLACK_BOT_TOKEN,
@@ -25,7 +26,7 @@ app.command("/nomikai", async ({ command, ack, say }) => {
     userId: command.user_id,
   });
 
-  const result = await planNomikai({
+  const result = await planHangout({
     slackText: command.text || "",
     workdir: process.env.PLANNER_REPO_DIR || process.cwd(),
     slackContext,

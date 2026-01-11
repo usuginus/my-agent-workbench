@@ -1,85 +1,71 @@
-# Slack Bot (Codex)
+# codex-echo-in-slack
 
-Slack でメンションやコマンドを受けると応答する bot です。Codex CLI を使って応答を生成します。
+Lightweight Slack bot powered by Codex. It replies to mentions and offers a `/hangout` command for quick meetup suggestions.
 
 ## Features
 
-### 1) メンション応答
+- Mention replies (concise, English-only)
+- `/hangout` suggestions with 3 picks
+- Slack-friendly formatting
+- Optional Slack context enrichment (channel history, members, user profile, thread)
 
-- チャンネル内メンションにフリーフォーマットで自然に返信
-- 必要なら短く簡潔に応答
+## Quick Start
 
-### 2) /nomikai 提案
+```bash
+npm install
+cp .env.sample .env
+npm run build
+npm start
+```
 
-- `/nomikai` コマンドで飲み会候補を 3 件提案
-- 検索条件（エリア/予算/人数/開始時間）を最初に表示
-- 各候補に食べログリンクを必ず付与
+## Configuration
 
-## Requirements
+Required:
+- `SLACK_BOT_TOKEN`
+- `SLACK_APP_TOKEN`
+- `SLACK_SIGNING_SECRET`
+- `OPENAI_API_KEY`
 
-- Node.js 18+
-- Slack App（Socket Mode）
-- Codex CLI（`codex` コマンドが実行できること）
+Optional:
+- `CODEX_WEB_SEARCH=0` disable web search
+- `CODEX_MODEL=gpt-4.1-mini`
+- `CODEX_REASONING_EFFORT=low`
+- `PLANNER_DEBUG=1` verbose failures
 
-## Setup
+See `.env.sample` for examples.
 
-1. 依存関係をインストール
+## Slack App Setup
 
-   ```bash
-   npm install
-   ```
-
-2. 環境変数を用意（`.env` を編集）
-
-   ```bash
-   SLACK_BOT_TOKEN=...
-   SLACK_APP_TOKEN=...
-   SLACK_SIGNING_SECRET=...
-   ```
-
-3. 起動
-   ```bash
-   npm run build
-   npm start
-   ```
-
-## Slack App 設定のポイント
-
-- Socket Mode を有効化
-- Slash Commands: `/nomikai`
+- Enable Socket Mode
+- Slash Commands: `/hangout`
 - Event Subscriptions: `app_mention`
-- Bot Token Scopes: `chat:write`, `conversations:read`, `channels:history`, `users:read`
-- Bot をチャンネルに追加
+- Bot Token Scopes:
+  - `chat:write`
+  - `conversations:read`
+  - `channels:history`
+  - `users:read`
 
-## Usage
+## Project Structure
 
 ```
-@your-bot こんにちは
+src/
+  app/                 # Slack entrypoint
+  services/            # Business logic (hangout, mentions)
+  integrations/        # Slack API + Codex CLI + sanitizers
 ```
 
+## Development
+
+```bash
+npm run dev
 ```
-/nomikai 渋谷 5000 4 19:30
-```
-
-## Key Files
-
-- `src/index.ts` : Slack イベントの入口
-- `src/nomikai.ts` : /nomikai のプロンプト生成と結果整形
-- `src/slack_formatters.ts` : Slack 表示用の整形ユーティリティ
-- `src/codex_client.ts` : Codex CLI 実行ラッパー
-- `src/slack_api.ts` : Slack Web API から文脈情報を取得
-
-## Codex CLI 設定（任意）
-
-環境変数で挙動を調整できます。
-
-- `CODEX_WEB_SEARCH=0` : Web 検索を無効化
-- `CODEX_MODEL=gpt-4.1-mini` : 使用モデルを変更
-- `CODEX_REASONING_EFFORT=low` : 推論強度を変更
-- `PLANNER_DEBUG=1` : 失敗時の診断メッセージを詳しく表示
 
 ## Troubleshooting
 
-- `codex` が見つからない: PATH に `codex` が通っているか確認
-- `codex exec` がタイムアウト: `timeoutMs` を延長するか、条件を短くする
-- 投稿が他ユーザーに見えない: `chat:write` 権限とチャンネル追加を確認
+- `codex` not found: ensure Codex CLI is installed and on PATH
+- timeouts: reduce prompt size or increase timeout
+- slash command fails: check Slack command name matches `/hangout`
+
+## License
+
+MIT
