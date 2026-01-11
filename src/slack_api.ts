@@ -11,16 +11,49 @@ function slimMessages(messages, limit = 20) {
     }));
 }
 
+export type SlackContext = {
+  channel_id: string;
+  recent_messages?: Array<{
+    user: string;
+    text: string;
+    ts: string;
+    thread_ts: string;
+  }>;
+  recent_messages_error?: string;
+  channel_members?: string[];
+  channel_members_error?: string;
+  request_user?: {
+    id: string;
+    name?: string;
+    real_name?: string;
+    display_name?: string;
+    title?: string;
+  };
+  request_user_error?: string;
+  thread_messages?: Array<{
+    user: string;
+    text: string;
+    ts: string;
+    thread_ts: string;
+  }>;
+  thread_messages_error?: string;
+};
+
 export async function buildSlackContext({
   token,
   channelId,
   userId,
   threadTs,
-}) {
+}: {
+  token?: string;
+  channelId?: string;
+  userId?: string;
+  threadTs?: string;
+}): Promise<SlackContext | null> {
   if (!token || !channelId) return null;
 
   const client = new WebClient(token);
-  const context = { channel_id: channelId };
+  const context: SlackContext = { channel_id: channelId };
 
   try {
     const history = await client.conversations.history({

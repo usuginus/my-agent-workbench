@@ -1,5 +1,6 @@
-import { runCodexExec } from "./codex_client.js";
+import { runCodexExec, type ExecError } from "./codex_client.js";
 import { formatNomikaiMessage, toSlackMarkdown } from "./slack_formatters.js";
+import { type SlackContext } from "./slack_api.js";
 
 const JSON_SCHEMA = `{
   "candidates": [
@@ -8,7 +9,7 @@ const JSON_SCHEMA = `{
   "final_message": string
 }`;
 
-function buildNomikaiPrompt(slackText, slackContext) {
+function buildNomikaiPrompt(slackText: string, slackContext: SlackContext | null) {
   return `
 You are a nomikai planning agent.
 
@@ -28,7 +29,7 @@ ${JSON_SCHEMA}
 `.trim();
 }
 
-function buildMentionPrompt(slackText, slackContext) {
+function buildMentionPrompt(slackText: string, slackContext: SlackContext | null) {
   return `
 You are a helpful assistant responding in a Slack channel.
 Respond naturally in Japanese to the user's mention. Be concise and friendly.
@@ -41,7 +42,7 @@ ${JSON.stringify(slackContext || null)}
 `.trim();
 }
 
-function tryParseJson(stdout) {
+function tryParseJson(stdout: string) {
   // codexの出力に余計な行が混ざることがあるので、最初の { から最後の } までを拾う
   const start = stdout.indexOf("{");
   const end = stdout.lastIndexOf("}");
@@ -52,7 +53,7 @@ function tryParseJson(stdout) {
   return JSON.parse(jsonText);
 }
 
-function diagnoseFailure(err) {
+function diagnoseFailure(err: ExecError) {
   const msg = `${err?.message ?? ""}\n${err?.stderr ?? ""}`.toLowerCase();
   if (msg.includes("enoent") || msg.includes("spawn codex")) {
     return "Codex CLI が見つかりません。実行環境に `codex` がインストールされ、PATH が通っているか確認してください。";
@@ -66,7 +67,15 @@ function diagnoseFailure(err) {
   return "Codex の実行に失敗しました。サーバーログの stderr を確認してください。";
 }
 
-export async function planNomikai({ slackText, workdir, slackContext }) {
+export async function planNomikai({
+  slackText,
+  workdir,
+  slackContext,
+}: {
+  slackText: string;
+  workdir: string;
+  slackContext: SlackContext | null;
+}) {
   const prompt1 = buildNomikaiPrompt(slackText, slackContext);
 
   try {
@@ -81,12 +90,12 @@ export async function planNomikai({ slackText, workdir, slackContext }) {
       const plan = tryParseJson(stdout);
       return { ok: true, text: formatNomikaiMessage(plan), raw: plan };
     } catch (e2) {
-      const hint = diagnoseFailure(e2);
+      const hint = diagnoseFailure(e2 as ExecError);
       console.error("planNomikai failed", {
-        error1: e1?.message,
-        error2: e2?.message,
-        stderr: e2?.stderr ?? e1?.stderr,
-        stdout: e2?.stdout ?? e1?.stdout,
+        error1: (e1 as ExecError)?.message,
+        error2: (e2 as ExecError)?.message,
+        stderr: (e2 as ExecError)?.stderr ?? (e1 as ExecError)?.stderr,
+        stdout: (e2 as ExecError)?.stdout ?? (e1 as ExecError)?.stdout,
       });
       const debugEnabled =
         process.env.PLANNER_DEBUG === "1" || process.env.PLANNER_DEBUG === "true";
@@ -115,11 +124,11 @@ export async function respondMention({ slackText, workdir, slackContext }) {
     }
     return { ok: true, text };
   } catch (e) {
-    const hint = diagnoseFailure(e);
+    const hint = diagnoseFailure(e as ExecError);
     console.error("respondMention failed", {
-      error: e?.message,
-      stderr: e?.stderr,
-      stdout: e?.stdout,
+      error: (e as ExecError)?.message,
+      stderr: (e as ExecError)?.stderr,
+      stdout: (e as ExecError)?.stdout,
     });
     return {
       ok: false,

@@ -39,7 +39,8 @@ Slack でメンションやコマンドを受けると応答する bot です。
 
 3. 起動
    ```bash
-   node src/index.js
+   npm run build
+   npm start
    ```
 
 ## Slack App 設定のポイント
@@ -62,11 +63,11 @@ Slack でメンションやコマンドを受けると応答する bot です。
 
 ## Key Files
 
-- `src/index.js` : Slack イベントの入口
-- `src/nomikai.js` : /nomikai のプロンプト生成と結果整形
-- `src/slack_formatters.js` : Slack 表示用の整形ユーティリティ
-- `src/codex_client.js` : Codex CLI 実行ラッパー
-- `src/slack_api.js` : Slack Web API から文脈情報を取得
+- `src/index.ts` : Slack イベントの入口
+- `src/nomikai.ts` : /nomikai のプロンプト生成と結果整形
+- `src/slack_formatters.ts` : Slack 表示用の整形ユーティリティ
+- `src/codex_client.ts` : Codex CLI 実行ラッパー
+- `src/slack_api.ts` : Slack Web API から文脈情報を取得
 
 ## Codex CLI 設定（任意）
 

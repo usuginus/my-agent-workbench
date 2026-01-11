@@ -1,7 +1,25 @@
 import { spawn } from "node:child_process";
 
-export async function runCodexExec({ prompt, cwd, timeoutMs = 180000 }) {
-  return await new Promise((resolve, reject) => {
+export type ExecResult = {
+  stdout: string;
+  stderr: string;
+};
+
+export type ExecError = Error & {
+  stdout?: string;
+  stderr?: string;
+};
+
+export async function runCodexExec({
+  prompt,
+  cwd,
+  timeoutMs = 180000,
+}: {
+  prompt: string;
+  cwd: string;
+  timeoutMs?: number;
+}): Promise<ExecResult> {
+  return await new Promise<ExecResult>((resolve, reject) => {
     const args = ["exec", "--skip-git-repo-check"];
     const webSearch = process.env.CODEX_WEB_SEARCH;
     if (webSearch === "0" || webSearch === "false") {
@@ -41,7 +59,9 @@ export async function runCodexExec({ prompt, cwd, timeoutMs = 180000 }) {
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        const e = new Error(`Codex command failed with exit code: ${code}`);
+        const e: ExecError = new Error(
+          `Codex command failed with exit code: ${code}`
+        );
         e.stdout = stdout;
         e.stderr = stderr;
         reject(e);
