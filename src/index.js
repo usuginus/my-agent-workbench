@@ -39,7 +39,10 @@ app.event("app_mention", async ({ event, say }) => {
 
   const cleaned = stripBotMention(event.text);
   if (!cleaned) {
-    await say(`<@${event.user}> 何かお手伝いしましょうか？`);
+    await say({
+      text: `<@${event.user}> 何かお手伝いしましょうか？`,
+      thread_ts: event.thread_ts || event.ts,
+    });
     return;
   }
 
@@ -56,8 +59,11 @@ app.event("app_mention", async ({ event, say }) => {
     slackContext,
   });
 
-  await say(`<@${event.user}> ${result.text}`);
+  await say({
+    text: `<@${event.user}> ${result.text}`,
+    thread_ts: event.thread_ts || event.ts,
+  });
 });
 
 await app.start();
-console.log("⚡️ nomikai bot is running (Socket Mode)");
+console.log("⚡️ slack bot is running (Socket Mode)");
