@@ -7,6 +7,30 @@ const INCOMPLETE_SUFFIX = "（追記予定）";
 const DEFAULT_MAX_REFINES = 4;
 const DRAFT_COMPLETENESS = 50;
 
+type PromptMeta = {
+  pass: number;
+  totalPasses: number;
+  targetPercent: number;
+  isFinal: boolean;
+};
+
+type ProgressPayload = {
+  stage: "draft" | "refined";
+  text: string;
+  pass: number;
+  totalPasses: number;
+  pending: boolean;
+};
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const INCOMPLETE_MARKER_PATTERN = new RegExp(
+  `${escapeRegExp(INCOMPLETE_MARKER)}\\s*${escapeRegExp(INCOMPLETE_SUFFIX)}?`,
+  "g",
+);
+
 function getTargetCompleteness(pass: number, totalPasses: number): number {
   if (totalPasses <= 1) return 100;
   const clampedPass = Math.min(Math.max(pass, 1), totalPasses);
@@ -15,15 +39,52 @@ function getTargetCompleteness(pass: number, totalPasses: number): number {
   return Math.round(DRAFT_COMPLETENESS + step * (clampedPass - 1));
 }
 
+function buildMeta(pass: number, totalPasses: number): PromptMeta {
+  return {
+    pass,
+    totalPasses,
+    targetPercent: getTargetCompleteness(pass, totalPasses),
+    isFinal: pass >= totalPasses,
+  };
+}
+
+function buildInputSection(
+  slackText: string,
+  slackContext: SlackContext | null,
+  draft?: string,
+): string {
+  const base = `
+ユーザーメッセージ:
+${JSON.stringify(slackText)}
+
+Slack コンテキスト（JSON / ある場合）:
+${JSON.stringify(slackContext || null)}
+  `.trim();
+
+  if (!draft) return base;
+
+  return `${base}\n\nドラフト回答:\n${JSON.stringify(draft)}`;
+}
+
+function getRefineConfig() {
+  const enabled =
+    process.env.CODEX_REFINE === undefined ||
+    (process.env.CODEX_REFINE !== "0" && process.env.CODEX_REFINE !== "false");
+  const envMax = Number.parseInt(process.env.CODEX_REFINE_MAX || "", 10);
+  const maxRefines =
+    enabled && Number.isFinite(envMax) && envMax > 0
+      ? envMax
+      : enabled
+        ? DEFAULT_MAX_REFINES
+        : 0;
+  const totalPasses = 1 + maxRefines;
+  return { enabled, maxRefines, totalPasses };
+}
+
 function buildMentionPrompt(
   slackText: string,
   slackContext: SlackContext | null,
-  meta: {
-    pass: number;
-    totalPasses: number;
-    targetPercent: number;
-    isFinal: boolean;
-  },
+  meta: PromptMeta,
 ): string {
   return `
 あなたは Slack チャンネルで返信するアシスタントです。
@@ -51,6 +112,7 @@ ${meta.isFinal ? "• 今回が最終回なので、可能な限り完成させ�
 • 先に短く答える
 • 必要なら箇条書き
 • 説明はコンパクトに
+• 2回目以降は読みやすさ優先（改行・箇条書き・適度な絵文字を活用）
 
 ローカル作業コンテキスト:
 • この Slack エージェントは \`my-agent-workbench\` で動作する。
@@ -82,11 +144,7 @@ Docs 検索ポリシー:
 • Slack メッセージのみ
 • サマリー内容は出さない
 
-ユーザーメッセージ:
-${JSON.stringify(slackText)}
-
-Slack コンテキスト（JSON / ある場合）:
-${JSON.stringify(slackContext || null)}
+${buildInputSection(slackText, slackContext)}
   `.trim();
 }
 
@@ -99,12 +157,7 @@ function buildRefinePrompt({
   slackText: string;
   slackContext: SlackContext | null;
   draft: string;
-  meta: {
-    pass: number;
-    totalPasses: number;
-    targetPercent: number;
-    isFinal: boolean;
-  };
+  meta: PromptMeta;
 }): string {
   return `
 あなたは Slack チャンネルで返信するアシスタントです。
@@ -156,20 +209,13 @@ Docs 検索ポリシー:
 飲食店・カフェ提案:
 • 最大3件
 • 店名と短い理由
-• 食べログリンクは取れなければ省略
+• 食べログリンクを必ずつける
 
 出力:
 • Slack メッセージのみ
 • 余計な文は出さない
 
-ユーザーメッセージ:
-${JSON.stringify(slackText)}
-
-Slack コンテキスト（JSON / ある場合）:
-${JSON.stringify(slackContext || null)}
-
-ドラフト回答:
-${JSON.stringify(draft)}
+${buildInputSection(slackText, slackContext, draft)}
   `.trim();
 }
 
@@ -188,11 +234,11 @@ function formatMentionReply(text: string): string {
 
 function stripIncompleteMarker(text: string): string {
   let out = text || "";
-  const escaped = INCOMPLETE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const suffixEscaped = INCOMPLETE_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`${escaped}\\s*${suffixEscaped}?`, "g");
-  out = out.replace(pattern, "");
-  return out.replace(/\s{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  out = out.replace(INCOMPLETE_MARKER_PATTERN, "");
+  return out
+    .replace(/\s{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function diagnoseFailure(err: ExecError) {
@@ -222,32 +268,11 @@ export async function respondMention({
   slackText: string;
   workdir: string;
   slackContext: SlackContext | null;
-  onProgress?: (payload: {
-    stage: "draft" | "refined";
-    text: string;
-    pass: number;
-    totalPasses: number;
-    pending: boolean;
-  }) => void;
+  onProgress?: (payload: ProgressPayload) => void;
 }) {
-  const refineEnabled =
-    process.env.CODEX_REFINE === undefined ||
-    (process.env.CODEX_REFINE !== "0" &&
-      process.env.CODEX_REFINE !== "false");
-  const envMax = Number.parseInt(process.env.CODEX_REFINE_MAX || "", 10);
-  const maxRefines =
-    refineEnabled && Number.isFinite(envMax) && envMax > 0
-      ? envMax
-      : refineEnabled
-        ? DEFAULT_MAX_REFINES
-        : 0;
-  const totalPasses = 1 + maxRefines;
-  const prompt = buildMentionPrompt(slackText, slackContext, {
-    pass: 1,
-    totalPasses,
-    targetPercent: getTargetCompleteness(1, totalPasses),
-    isFinal: totalPasses === 1,
-  });
+  const refineConfig = getRefineConfig();
+  const meta = buildMeta(1, refineConfig.totalPasses);
+  const prompt = buildMentionPrompt(slackText, slackContext, meta);
   try {
     const { stdout } = await runCodexExec({ prompt, cwd: workdir });
     let draftInternal = formatMentionReply((stdout || "").trim());
@@ -259,39 +284,37 @@ export async function respondMention({
       stage: "draft",
       text: draftDisplay,
       pass: 1,
-      totalPasses,
-      pending: refineEnabled && maxRefines > 0,
+      totalPasses: refineConfig.totalPasses,
+      pending: refineConfig.enabled && refineConfig.maxRefines > 0,
     });
-    if (refineEnabled) {
+    if (refineConfig.enabled) {
       let currentInternal = draftInternal;
       let currentDisplay = draftDisplay;
-      for (let attempt = 0; attempt < maxRefines; attempt += 1) {
+      for (let attempt = 0; attempt < refineConfig.maxRefines; attempt += 1) {
+        const pass = attempt + 2;
         const refinePrompt = buildRefinePrompt({
           slackText,
           slackContext,
           draft: currentInternal,
-          meta: {
-            pass: attempt + 2,
-            totalPasses,
-            targetPercent: getTargetCompleteness(attempt + 2, totalPasses),
-            isFinal: attempt + 2 >= totalPasses,
-          },
+          meta: buildMeta(pass, refineConfig.totalPasses),
         });
         try {
           const { stdout: refinedStdout } = await runCodexExec({
             prompt: refinePrompt,
             cwd: workdir,
           });
-          const refinedInternal = formatMentionReply((refinedStdout || "").trim());
+          const refinedInternal = formatMentionReply(
+            (refinedStdout || "").trim(),
+          );
           if (refinedInternal && refinedInternal !== currentInternal) {
             currentInternal = refinedInternal;
             currentDisplay = stripIncompleteMarker(currentInternal);
-            const remaining = maxRefines - attempt - 1;
+            const remaining = refineConfig.maxRefines - attempt - 1;
             await onProgress?.({
               stage: "refined",
               text: currentDisplay,
-              pass: attempt + 2,
-              totalPasses,
+              pass,
+              totalPasses: refineConfig.totalPasses,
               pending:
                 currentInternal.includes(INCOMPLETE_MARKER) && remaining > 0,
             });
