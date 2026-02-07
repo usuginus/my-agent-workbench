@@ -215,10 +215,14 @@ Docs 検索ポリシー:
 出力:
 • Slack メッセージのみ
 • 余計な文は出さない
+• 出力例を参考に、可能な限り可読性が高い形式で出力する
+  • Slack記法  
+  • 適度に改行を入れる
+  • 絵文字を効果的に使う
 
 出力例:
-\`\`\`
-なるほどね！調べたところ、こういう感じかな。
+---
+なるほどね！調べたところ、こういう感じかな 😊
 
 結論：
 MultiAgentに全部任せるより、Actionsの matrix 分割 → 最後に集約 が最短＆安定だよ。
@@ -228,22 +232,22 @@ MultiAgentに全部任せるより、Actionsの matrix 分割 → 最後に集�
 - https://github.com/openai/codex-action
 
 おすすめ構成：
-① Prepare
-- checkout + fetch
-- diff / changed_files 作成
-② Review
-- 入力：diff + ガイドライン1本
-- \`codex exec\` 実行
-- \`--output-schema\` でJSON固定（ \`severity\` / \`file\` / \` /evidence\` / \`recommendation\`）
-- blocker/high優先、artifact保存
-③ Reduce
-- JSONマージ → 重複排除 → 重大度順
-- PRにまとめて1コメント
+- Prepare
+  - checkout + fetch
+  - diff / changed_files 作成
+- Review
+  - 入力：diff + ガイドライン1本
+  - \`codex exec\` 実行
+  - \`--output-schema\` でJSON固定（ \`severity\` / \`file\` / \` /evidence\` / \`recommendation\`）
+  - blocker/high優先、artifact保存
+- Reduce
+  - JSONマージ → 重複排除 → 重大度順
+  - PRにまとめて1コメント
 
 ※ MultiAgent強化はあるが、CI側から観点分担を直接指定できないため matrix分割が堅実。
 
 観点ガイドラインの配置パス（例：docs/review/*.md）教えて 🙏
-\`\`\`
+---
 
 ${buildInputSection(slackText, slackContext, draft)}
   `.trim();
