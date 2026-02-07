@@ -270,7 +270,7 @@ function stripIncompleteMarker(text: string): string {
   let out = text || "";
   out = out.replace(INCOMPLETE_MARKER_PATTERN, "");
   return out
-    .replace(/\s{2,}/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
