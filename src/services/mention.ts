@@ -252,19 +252,6 @@ ${buildInputSection(slackText, slackContext, draft)}
   `.trim();
 }
 
-function formatMentionReply(text: string): string {
-  let out = toSlackMarkdown(text);
-  // Remove empty parentheses left behind by link stripping.
-  out = out.replace(/[ \t]*\([ \t]*\)[ \t]*/g, " ");
-  // Ensure numbered lists start on a new line.
-  out = out.replace(/[ \t](\d+)\)/g, "\n$1)");
-  // Ensure bullet points start on a new line.
-  out = out.replace(/[ \t]•/g, "\n•");
-  // Collapse excessive newlines.
-  out = out.replace(/\n{3,}/g, "\n\n");
-  return out.trim();
-}
-
 function stripIncompleteMarker(text: string): string {
   let out = text || "";
   out = out.replace(INCOMPLETE_MARKER_PATTERN, "");
@@ -308,7 +295,7 @@ export async function respondMention({
   const prompt = buildMentionPrompt(slackText, slackContext, meta);
   try {
     const { stdout } = await runCodexExec({ prompt, cwd: workdir });
-    let draftInternal = formatMentionReply((stdout || "").trim());
+    let draftInternal = toSlackMarkdown((stdout || "").trim());
     if (!draftInternal) {
       throw new Error("Empty response from codex.");
     }
@@ -336,7 +323,7 @@ export async function respondMention({
             prompt: refinePrompt,
             cwd: workdir,
           });
-          const refinedInternal = formatMentionReply(
+          const refinedInternal = toSlackMarkdown(
             (refinedStdout || "").trim(),
           );
           if (refinedInternal && refinedInternal !== currentInternal) {
