@@ -186,6 +186,15 @@ function formatMentionReply(text: string): string {
   return out.trim();
 }
 
+function stripIncompleteMarker(text: string): string {
+  let out = text || "";
+  const escaped = INCOMPLETE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const suffixEscaped = INCOMPLETE_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`${escaped}\\s*${suffixEscaped}?`, "g");
+  out = out.replace(pattern, "");
+  return out.replace(/\s{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function diagnoseFailure(err: ExecError) {
   const msg = `${err?.message ?? ""}\n${err?.stderr ?? ""}`.toLowerCase();
   if (msg.includes("enoent") || msg.includes("spawn codex")) {
@@ -241,24 +250,26 @@ export async function respondMention({
   });
   try {
     const { stdout } = await runCodexExec({ prompt, cwd: workdir });
-    let draft = formatMentionReply((stdout || "").trim());
-    if (!draft) {
+    let draftInternal = formatMentionReply((stdout || "").trim());
+    if (!draftInternal) {
       throw new Error("Empty response from codex.");
     }
+    const draftDisplay = stripIncompleteMarker(draftInternal);
     await onProgress?.({
       stage: "draft",
-      text: draft,
+      text: draftDisplay,
       pass: 1,
       totalPasses,
       pending: refineEnabled && maxRefines > 0,
     });
     if (refineEnabled) {
-      let current = draft;
+      let currentInternal = draftInternal;
+      let currentDisplay = draftDisplay;
       for (let attempt = 0; attempt < maxRefines; attempt += 1) {
         const refinePrompt = buildRefinePrompt({
           slackText,
           slackContext,
-          draft: current,
+          draft: currentInternal,
           meta: {
             pass: attempt + 2,
             totalPasses,
@@ -271,21 +282,22 @@ export async function respondMention({
             prompt: refinePrompt,
             cwd: workdir,
           });
-          const refined = formatMentionReply((refinedStdout || "").trim());
-          if (refined && refined !== current) {
-            current = refined;
+          const refinedInternal = formatMentionReply((refinedStdout || "").trim());
+          if (refinedInternal && refinedInternal !== currentInternal) {
+            currentInternal = refinedInternal;
+            currentDisplay = stripIncompleteMarker(currentInternal);
             const remaining = maxRefines - attempt - 1;
             await onProgress?.({
               stage: "refined",
-              text: current,
+              text: currentDisplay,
               pass: attempt + 2,
               totalPasses,
               pending:
-                current.includes(INCOMPLETE_MARKER) && remaining > 0,
+                currentInternal.includes(INCOMPLETE_MARKER) && remaining > 0,
             });
           }
-          if (!current.includes(INCOMPLETE_MARKER)) {
-            return { ok: true, text: current, refined: true };
+          if (!currentInternal.includes(INCOMPLETE_MARKER)) {
+            return { ok: true, text: currentDisplay, refined: true };
           }
         } catch (e) {
           console.warn("respondMention refine failed", {
@@ -296,12 +308,12 @@ export async function respondMention({
           break;
         }
       }
-      if (current !== draft) {
-        return { ok: true, text: current, refined: true };
+      if (currentInternal !== draftInternal) {
+        return { ok: true, text: currentDisplay, refined: true };
       }
     }
 
-    return { ok: true, text: draft, refined: false };
+    return { ok: true, text: draftDisplay, refined: false };
   } catch (e) {
     const hint = diagnoseFailure(e as ExecError);
     console.error("respondMention failed", {

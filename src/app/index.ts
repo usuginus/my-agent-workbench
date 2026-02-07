@@ -61,11 +61,43 @@ app.event("app_mention", async ({ event, say, client }) => {
   });
   const thinkingTs = thinking?.ts;
 
+  const mentionAliases = [
+    slackContext?.request_user?.display_name,
+    slackContext?.request_user?.real_name,
+    slackContext?.request_user?.name,
+  ].filter((v): v is string => Boolean(v && v.trim()));
+
+  const escapeRegExp = (value: string) =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const stripLeadingSelfMention = (text: string) => {
+    let out = (text || "").trimStart();
+    const patterns = [
+      new RegExp(`^<@${escapeRegExp(event.user)}>[,:、]?(?:\\s|　)*`),
+      ...mentionAliases.map(
+        (alias) => new RegExp(`^@${escapeRegExp(alias)}[,:、]?(?:\\s|　)*`),
+      ),
+    ];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const pattern of patterns) {
+        if (pattern.test(out)) {
+          out = out.replace(pattern, "");
+          out = out.replace(/^(?:\s|　)+/, "");
+          changed = true;
+        }
+      }
+    }
+    return out;
+  };
+
   const formatReply = (text: string, pending: boolean) => {
+    const body = stripLeadingSelfMention(text);
     const prefix = pending
       ? `<@${event.user}> 思考中... :loading:`
       : `<@${event.user}>`;
-    return `${prefix} ${text}`.trim();
+    return pending ? `${prefix}\n${body}`.trim() : `${prefix} ${body}`.trim();
   };
 
   const updateMessage = async (text: string, pending = false) => {
