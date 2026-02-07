@@ -97,7 +97,7 @@ app.event("app_mention", async ({ event, say, client }) => {
     const prefix = pending
       ? `<@${event.user}> 思考中... :loading:`
       : `<@${event.user}>`;
-    return pending ? `${prefix}\n${body}`.trim() : `${prefix} ${body}`.trim();
+    return `${prefix}\n${body}`.trim();
   };
 
   const updateMessage = async (text: string, pending = false) => {
