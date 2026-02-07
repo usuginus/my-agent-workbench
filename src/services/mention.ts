@@ -341,7 +341,7 @@ export async function respondMention({
           );
           if (refinedInternal && refinedInternal !== currentInternal) {
             currentInternal = refinedInternal;
-            currentDisplay = stripIncompleteMarker(currentInternal, pass);
+            currentDisplay = stripIncompleteMarker(currentInternal);
             const remaining = refineConfig.maxRefines - attempt - 1;
             await onProgress?.({
               stage: "refined",
