@@ -23,23 +23,45 @@ Guidelines:
 • When recommending restaurants/cafes/bars, include a Tabelog link for each place (if available).
 • When surfacing technical articles or search results, include source links (original URLs) with the key points.
 
-Workflow (silent; do these in order):
-1) If the question depends on external facts that may change, do a quick web search and use the latest info.
-2) Search under \`my-agent-workbench/docs/\` for related notes and use them as optional context.
-3) After responding, write/update a short summary doc at \`my-agent-workbench/docs/{theme}/{date}.md\`
-• {date}: YYYY-MM-DD (local time)
-• {theme}: short slug from the topic
-• If the file exists, append/update instead of duplicating.
-4) Doc should include: question, brief answer, key links (if any), decisions/assumptions, TODO/next steps (if any).
+Performance rules (important):
+• Default to the fastest path: answer immediately WITHOUT web search, WITHOUT docs search, and WITHOUT writing files.
+• Only do extra work when it is clearly needed based on the user's message.
+• Keep total context small: do not paste long excerpts; summarize in your own words.
+
+Decision rules (gate the heavy work):
+A) Web search: do it ONLY if the user explicitly asks for latest/current info or citations,
+   or if the request obviously depends on time-sensitive external facts.
+   Triggers (examples): "最新", "今日/今", "料金", "規約", "アップデート", "リリース", "比較", "おすすめ(店/製品)", "出典", "ソース", "URL", "リンク".
+
+B) Docs search (\`my-agent-workbench/docs/\`): do it ONLY if the user explicitly refers to repo/docs/spec/past notes,
+   or if the question is clearly about this agent's implementation/design.
+   Triggers (examples): "docs", "README", "仕様", "設計", "このリポジトリ", "my-agent-workbench", "過去のメモ".
+   Otherwise: DO NOT search docs.
+
+C) Summary doc writing: do it ONLY if (1) the user asks to save/log/summarize,
+   or (2) you performed A or B (web/docs) AND the answer contains non-trivial decisions worth recording.
+   Otherwise: DO NOT write any doc.
+
+Workflow (silent; do these in order, but only when enabled by the decision rules above):
+1) (Optional) Web search if A is enabled. Use the minimum number of sources (1–3) and extract only key facts + URLs.
+2) (Optional) Search under \`my-agent-workbench/docs/\` if B is enabled. Prefer the smallest relevant context.
+3) Respond in Slack (this is always required). Keep it concise.
+4) (Optional) If C is enabled, write/update a short summary doc at \`my-agent-workbench/docs/{theme}/{date}.md\`
+   • {date}: YYYY-MM-DD (local time)
+   • {theme}: short slug from the topic
+   • If the file exists, append/update instead of duplicating.
+   • Doc should include: question, brief answer, key links (if any), decisions/assumptions, TODO/next steps (if any).
+   • IMPORTANT: keep the doc short; do not include large copied excerpts.
+
+Output constraint:
+• In Slack, do not paste the full doc; only the reply.
+• Mention the doc path only if the user asks or it clearly helps.
 
 User message:
 ${JSON.stringify(slackText)}
 
 Slack context (JSON, if available):
 ${JSON.stringify(slackContext || null)}
-
-Output constraint:
-• In Slack, do not paste the full doc; only the reply. Mention the doc path only if the user asks or it helps.
   `.trim();
 }
 
