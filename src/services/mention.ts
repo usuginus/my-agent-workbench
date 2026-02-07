@@ -216,8 +216,7 @@ Docs 検索ポリシー:
 • Slack メッセージのみ
 • 余計な文は出さない
 • 出力例を参考に、可能な限り可読性が高い形式で出力する
-  • Slack記法  
-  • 適度に改行を入れる
+  • Slack記法を使う(太字、斜体、コードブロック、箇条書き等)
   • 絵文字を効果的に使う
 
 出力例:
@@ -256,11 +255,11 @@ ${buildInputSection(slackText, slackContext, draft)}
 function formatMentionReply(text: string): string {
   let out = toSlackMarkdown(text);
   // Remove empty parentheses left behind by link stripping.
-  out = out.replace(/\s*\(\s*\)\s*/g, " ");
+  out = out.replace(/[ \t]*\([ \t]*\)[ \t]*/g, " ");
   // Ensure numbered lists start on a new line.
-  out = out.replace(/\s(\d+)\)/g, "\n$1)");
+  out = out.replace(/[ \t](\d+)\)/g, "\n$1)");
   // Ensure bullet points start on a new line.
-  out = out.replace(/\s•/g, "\n•");
+  out = out.replace(/[ \t]•/g, "\n•");
   // Collapse excessive newlines.
   out = out.replace(/\n{3,}/g, "\n\n");
   return out.trim();
@@ -342,7 +341,7 @@ export async function respondMention({
           );
           if (refinedInternal && refinedInternal !== currentInternal) {
             currentInternal = refinedInternal;
-            currentDisplay = stripIncompleteMarker(currentInternal);
+            currentDisplay = stripIncompleteMarker(currentInternal, pass);
             const remaining = refineConfig.maxRefines - attempt - 1;
             await onProgress?.({
               stage: "refined",
