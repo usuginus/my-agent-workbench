@@ -56,20 +56,27 @@ app.event("app_mention", async ({ event, say, client }) => {
 
   const threadTs = event.thread_ts || event.ts;
   const thinking = await say({
-    text: `⏳ <@${event.user}> 考え中...`,
+    text: `<@${event.user}> 思考中... :loading:`,
     thread_ts: threadTs,
   });
   const thinkingTs = thinking?.ts;
 
-  const updateMessage = async (text: string) => {
+  const formatReply = (text: string, pending: boolean) => {
+    const prefix = pending
+      ? `<@${event.user}> 思考中... :loading:`
+      : `<@${event.user}>`;
+    return `${prefix} ${text}`.trim();
+  };
+
+  const updateMessage = async (text: string, pending = false) => {
     if (thinkingTs) {
       await client.chat.update({
         channel: event.channel,
         ts: thinkingTs,
-        text,
+        text: formatReply(text, pending),
       });
     } else {
-      await say({ text, thread_ts: threadTs });
+      await say({ text: formatReply(text, pending), thread_ts: threadTs });
     }
   };
 
@@ -77,18 +84,18 @@ app.event("app_mention", async ({ event, say, client }) => {
     slackText: cleaned,
     workdir: process.env.PLANNER_REPO_DIR || process.cwd(),
     slackContext,
-    onProgress: async ({ stage, text }) => {
+    onProgress: async ({ stage, text, pending }) => {
       if (stage === "draft") {
-        await updateMessage(`<@${event.user}> ${text}`);
+        await updateMessage(text, pending);
       }
       if (stage === "refined") {
-        await updateMessage(`<@${event.user}> ${text}`);
+        await updateMessage(text, pending);
       }
     },
   });
 
   if (!result.ok) {
-    await updateMessage(`<@${event.user}> ${result.text}`);
+    await updateMessage(result.text, false);
   }
 });
 

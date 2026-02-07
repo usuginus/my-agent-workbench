@@ -2,135 +2,90 @@ import { runCodexExec, type ExecError } from "../integrations/codex_client.js";
 import { toSlackMarkdown } from "../integrations/slack_formatters.js";
 import { type SlackContext } from "../integrations/slack_api.js";
 
+const INCOMPLETE_MARKER = "※暫定回答";
+const INCOMPLETE_SUFFIX = "（追記予定）";
+const DEFAULT_MAX_REFINES = 4;
+const DRAFT_COMPLETENESS = 50;
+
+function getTargetCompleteness(pass: number, totalPasses: number): number {
+  if (totalPasses <= 1) return 100;
+  const clampedPass = Math.min(Math.max(pass, 1), totalPasses);
+  const span = 100 - DRAFT_COMPLETENESS;
+  const step = span / (totalPasses - 1);
+  return Math.round(DRAFT_COMPLETENESS + step * (clampedPass - 1));
+}
+
 function buildMentionPrompt(
   slackText: string,
   slackContext: SlackContext | null,
+  meta: {
+    pass: number;
+    totalPasses: number;
+    targetPercent: number;
+    isFinal: boolean;
+  },
 ): string {
   return `
-You are a helpful assistant responding in a Slack channel.
+あなたは Slack チャンネルで返信するアシスタントです。
+これは「${meta.pass}回目の返信（${meta.isFinal ? "最終回答" : "ドラフト"}）」です。
 
-Reply naturally in Japanese.
-Be concise, friendly, and practical.
-Do not mention internal steps unless asked.
+目的:
+• できるだけ早く、役に立つ一次回答を返す。
+• 今回の目標完成度は ${meta.targetPercent}%（全${meta.totalPasses}回のうち${meta.pass}回目）。
 
-────────────────────────
-Core behavior
-────────────────────────
-• Prefer fast, useful answers.
-• External lookups (web/docs/logging) are allowed but must be lightweight.
-• Never delay the Slack reply for too long.
+やること:
+• まず短く結論や方向性を示す。
+• 不足がある場合でも、今わかる範囲で答える。
+${meta.isFinal ? "• 最終回なので、マーカーは付けない。足りない場合は質問は最大1つ。" : `• 不十分だと判断したら、文末に「${INCOMPLETE_MARKER}${INCOMPLETE_SUFFIX}」を必ず付ける。`}
+• 不足が致命的な場合のみ、質問は最大1つ。
+${meta.isFinal ? "• 今回が最終回なので、可能な限り完成させ、マーカーは付けない。" : "• 不十分な場合は、後続の改善で補完する前提でよい。"}
 
-Speed > completeness.
+守ること:
+• 日本語で自然に返答する。
+• 簡潔・親しみやすい・実用的に。
+• 求められない限り内部手順は書かない。
+• 外部参照（Web/Docs/ログ）は可能だが軽量に。
+• Slack 返信を遅らせない。
 
-────────────────────────
-Local workspace context
-────────────────────────
-• This Slack agent runs in \`my-agent-workbench\`.
-• \`my-agent-workbench/docs/\` may be used for optional context and summaries.
+文体:
+• 先に短く答える
+• 必要なら箇条書き
+• 説明はコンパクトに
 
-────────────────────────
-Style
-────────────────────────
-• Short answers first
-• Bullet points when helpful
-• Ask at most one clarifying question
-• Keep explanations compact
+ローカル作業コンテキスト:
+• この Slack エージェントは \`my-agent-workbench\` で動作する。
+• \`my-agent-workbench/docs/\` は必要時のみ参照・要約に使ってよい。
 
-────────────────────────
-Soft execution rules (IMPORTANT)
-────────────────────────
-All optional work must stay lightweight.
+軽量実行ルール:
+• 追加処理は合計 ~10 秒以内
+• 超えそうなら省略して回答
 
-Time budget:
-• Total optional processing: ~10 seconds max
-• If it might exceed → skip and answer anyway
+Web 検索ポリシー:
+• 最新情報/レコメンド/比較/外部事実が必要なら使う
+• 検索は最大3件、要点のみ、遅いなら打ち切り
 
-Never block the Slack reply.
+Docs 検索ポリシー:
+• このリポジトリ/実装/設計の質問のみ
+• 開くファイルは1〜2件まで
 
-────────────────────────
-Web search policy
-────────────────────────
-Web search is ENABLED but lightweight.
+サマリーログ方針:
+• 可能なら短いサマリー（5〜8行）
+• 時間がなければスキップ
+• 保存先: \`my-agent-workbench/docs/{theme}/{date}.md\`
 
-Use web search when:
-• the user asks for latest info
-• recommendations (restaurants/products)
-• comparisons/rankings
-• or external facts are clearly needed
+飲食店・カフェ提案:
+• 最大3件
+• 店名と短い理由
+• 食べログリンクは取れなければ省略
 
-Limits:
-• 3 search query only
-• summarize only key facts
-• stop early if slow
-• if links cannot be retrieved quickly → answer without links
+出力:
+• Slack メッセージのみ
+• サマリー内容は出さない
 
-Do not over-search.
-
-────────────────────────
-Docs search policy
-────────────────────────
-Docs search is ENABLED but minimal.
-
-Use only when:
-• the question relates to this repo/implementation/design
-
-Limits:
-• open at most 1–2 relevant files
-• summarize briefly
-• do not load many files
-
-────────────────────────
-Summary logging policy
-────────────────────────
-Logging is ENABLED but lightweight.
-
-After answering:
-• write a SHORT summary doc
-• keep it under ~5–8 lines
-• never include long excerpts
-• skip logging if time is short
-
-Path:
-\`my-agent-workbench/docs/{theme}/{date}.md\`
-
-Include only:
-• question
-• brief answer
-• key links (if any)
-• decisions/todo (short)
-
-────────────────────────
-Restaurant / cafe recommendations (timeout safe)
-────────────────────────
-• Recommend 3 places max
-• Provide names + short reasons first
-• Try to include Tabelog links
-• If link retrieval is slow → skip links and proceed
-
-────────────────────────
-Workflow (silent)
-────────────────────────
-1) Draft answer immediately
-2) Optionally do quick web/docs lookup within limits
-3) Send Slack reply
-4) Optionally write short summary
-
-Never let 2 or 4 delay 3.
-
-────────────────────────
-Output
-────────────────────────
-Slack message only.
-Do not paste summary content.
-
-────────────────────────
-User message
-────────────────────────
+ユーザーメッセージ:
 ${JSON.stringify(slackText)}
 
-────────────────────────
-Slack context (JSON, if available)
-────────────────────────
+Slack コンテキスト（JSON / ある場合）:
 ${JSON.stringify(slackContext || null)}
   `.trim();
 }
@@ -139,54 +94,81 @@ function buildRefinePrompt({
   slackText,
   slackContext,
   draft,
+  meta,
 }: {
   slackText: string;
   slackContext: SlackContext | null;
   draft: string;
+  meta: {
+    pass: number;
+    totalPasses: number;
+    targetPercent: number;
+    isFinal: boolean;
+  };
 }): string {
   return `
-You are a helpful assistant responding in a Slack channel.
-You are refining a draft reply.
+あなたは Slack チャンネルで返信するアシスタントです。
+これは「${meta.pass}回目の返信（改善版）」です。
 
-Reply naturally in Japanese.
-Be concise, friendly, and practical.
-Do not mention internal steps unless asked.
+目的:
+• ドラフトをより完成度の高い回答に引き上げる。
+• 今回の目標完成度は ${meta.targetPercent}%（全${meta.totalPasses}回のうち${meta.pass}回目）。
 
-────────────────────────
-Core behavior
-────────────────────────
-• Improve clarity, usefulness, and correctness.
-• Add references or links if they are insufficient.
-• If the draft is already good, return it EXACTLY unchanged.
-• Keep the reply compact and friendly.
+やること:
+• 不足部分の補完、誤り修正、曖昧さの解消。
+• 必要なら外部参照（Web/Docs/ログ）を軽量に行う。
+• 本当に必要な情報が欠けている場合のみ、質問は最大1つ。
+• ドラフトに「${INCOMPLETE_MARKER}」がある場合は補完し、マーカーは削除する。
+${meta.isFinal ? "• 今回が最終回なら、マーカーは残さず、質問は最大1つに留める。" : "• それでも不足が残る場合は、マーカーを残して次の改善に回す。"}
 
-────────────────────────
-Style
-────────────────────────
-• Short answers first
-• Bullet points when helpful
-• Ask at most one clarifying question
-• Keep explanations compact
+守ること:
+• 日本語で自然に返答する。
+• 簡潔・親しみやすい・実用的に。
+• 求められない限り内部手順は書かない。
+• 返信はコンパクトに。
 
-────────────────────────
-Output
-────────────────────────
-Slack message only.
-No extra text.
+文体:
+• 先に短く答える
+• 必要なら箇条書き
+• 説明はコンパクトに
 
-────────────────────────
-User message
-────────────────────────
+ローカル作業コンテキスト:
+• この Slack エージェントは \`my-agent-workbench\` で動作する。
+• \`my-agent-workbench/docs/\` は必要時のみ参照・要約に使ってよい。
+
+軽量実行ルール:
+• 追加処理は合計 ~10 秒以内
+• 超えそうなら省略して回答
+
+Web 検索ポリシー:
+• 最新情報/レコメンド/比較/外部事実が必要なら使う
+• 検索は最大3件、要点のみ、遅いなら打ち切り
+
+Docs 検索ポリシー:
+• このリポジトリ/実装/設計の質問のみ
+• 開くファイルは1〜2件まで
+
+サマリーログ方針:
+• 可能なら短いサマリー（5〜8行）
+• 時間がなければスキップ
+• 保存先: \`my-agent-workbench/docs/{theme}/{date}.md\`
+
+飲食店・カフェ提案:
+• 最大3件
+• 店名と短い理由
+• 食べログリンクは取れなければ省略
+
+出力:
+• Slack メッセージのみ
+• 余計な文は出さない
+
+ユーザーメッセージ:
 ${JSON.stringify(slackText)}
 
-────────────────────────
-Slack context (JSON, if available)
-────────────────────────
+Slack コンテキスト（JSON / ある場合）:
 ${JSON.stringify(slackContext || null)}
 
-────────────────────────
-Draft reply
-────────────────────────
+ドラフト回答:
 ${JSON.stringify(draft)}
   `.trim();
 }
@@ -231,43 +213,91 @@ export async function respondMention({
   slackText: string;
   workdir: string;
   slackContext: SlackContext | null;
-  onProgress?: (payload: { stage: "draft" | "refined"; text: string }) => void;
+  onProgress?: (payload: {
+    stage: "draft" | "refined";
+    text: string;
+    pass: number;
+    totalPasses: number;
+    pending: boolean;
+  }) => void;
 }) {
-  const prompt = buildMentionPrompt(slackText, slackContext);
+  const refineEnabled =
+    process.env.CODEX_REFINE === undefined ||
+    (process.env.CODEX_REFINE !== "0" &&
+      process.env.CODEX_REFINE !== "false");
+  const envMax = Number.parseInt(process.env.CODEX_REFINE_MAX || "", 10);
+  const maxRefines =
+    refineEnabled && Number.isFinite(envMax) && envMax > 0
+      ? envMax
+      : refineEnabled
+        ? DEFAULT_MAX_REFINES
+        : 0;
+  const totalPasses = 1 + maxRefines;
+  const prompt = buildMentionPrompt(slackText, slackContext, {
+    pass: 1,
+    totalPasses,
+    targetPercent: getTargetCompleteness(1, totalPasses),
+    isFinal: totalPasses === 1,
+  });
   try {
     const { stdout } = await runCodexExec({ prompt, cwd: workdir });
-    const draft = formatMentionReply((stdout || "").trim());
+    let draft = formatMentionReply((stdout || "").trim());
     if (!draft) {
       throw new Error("Empty response from codex.");
     }
-    await onProgress?.({ stage: "draft", text: draft });
-
-    const refineEnabled =
-      process.env.CODEX_REFINE === undefined ||
-      (process.env.CODEX_REFINE !== "0" &&
-        process.env.CODEX_REFINE !== "false");
+    await onProgress?.({
+      stage: "draft",
+      text: draft,
+      pass: 1,
+      totalPasses,
+      pending: refineEnabled && maxRefines > 0,
+    });
     if (refineEnabled) {
-      const refinePrompt = buildRefinePrompt({
-        slackText,
-        slackContext,
-        draft,
-      });
-      try {
-        const { stdout: refinedStdout } = await runCodexExec({
-          prompt: refinePrompt,
-          cwd: workdir,
+      let current = draft;
+      for (let attempt = 0; attempt < maxRefines; attempt += 1) {
+        const refinePrompt = buildRefinePrompt({
+          slackText,
+          slackContext,
+          draft: current,
+          meta: {
+            pass: attempt + 2,
+            totalPasses,
+            targetPercent: getTargetCompleteness(attempt + 2, totalPasses),
+            isFinal: attempt + 2 >= totalPasses,
+          },
         });
-        const refined = formatMentionReply((refinedStdout || "").trim());
-        if (refined && refined !== draft) {
-          await onProgress?.({ stage: "refined", text: refined });
-          return { ok: true, text: refined, refined: true };
+        try {
+          const { stdout: refinedStdout } = await runCodexExec({
+            prompt: refinePrompt,
+            cwd: workdir,
+          });
+          const refined = formatMentionReply((refinedStdout || "").trim());
+          if (refined && refined !== current) {
+            current = refined;
+            const remaining = maxRefines - attempt - 1;
+            await onProgress?.({
+              stage: "refined",
+              text: current,
+              pass: attempt + 2,
+              totalPasses,
+              pending:
+                current.includes(INCOMPLETE_MARKER) && remaining > 0,
+            });
+          }
+          if (!current.includes(INCOMPLETE_MARKER)) {
+            return { ok: true, text: current, refined: true };
+          }
+        } catch (e) {
+          console.warn("respondMention refine failed", {
+            error: (e as ExecError)?.message,
+            stderr: (e as ExecError)?.stderr,
+            stdout: (e as ExecError)?.stdout,
+          });
+          break;
         }
-      } catch (e) {
-        console.warn("respondMention refine failed", {
-          error: (e as ExecError)?.message,
-          stderr: (e as ExecError)?.stderr,
-          stdout: (e as ExecError)?.stdout,
-        });
+      }
+      if (current !== draft) {
+        return { ok: true, text: current, refined: true };
       }
     }
 
