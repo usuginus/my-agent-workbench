@@ -135,6 +135,62 @@ ${JSON.stringify(slackContext || null)}
   `.trim();
 }
 
+function buildRefinePrompt({
+  slackText,
+  slackContext,
+  draft,
+}: {
+  slackText: string;
+  slackContext: SlackContext | null;
+  draft: string;
+}): string {
+  return `
+You are a helpful assistant responding in a Slack channel.
+You are refining a draft reply.
+
+Reply naturally in Japanese.
+Be concise, friendly, and practical.
+Do not mention internal steps unless asked.
+
+────────────────────────
+Core behavior
+────────────────────────
+• Improve clarity, usefulness, and correctness.
+• Add references or links if they are insufficient.
+• If the draft is already good, return it EXACTLY unchanged.
+• Keep the reply compact and friendly.
+
+────────────────────────
+Style
+────────────────────────
+• Short answers first
+• Bullet points when helpful
+• Ask at most one clarifying question
+• Keep explanations compact
+
+────────────────────────
+Output
+────────────────────────
+Slack message only.
+No extra text.
+
+────────────────────────
+User message
+────────────────────────
+${JSON.stringify(slackText)}
+
+────────────────────────
+Slack context (JSON, if available)
+────────────────────────
+${JSON.stringify(slackContext || null)}
+
+────────────────────────
+Draft reply
+────────────────────────
+${JSON.stringify(draft)}
+  `.trim();
+}
+
 function formatMentionReply(text: string): string {
   let out = toSlackMarkdown(text);
   // Remove empty parentheses left behind by link stripping.
@@ -170,19 +226,52 @@ export async function respondMention({
   slackText,
   workdir,
   slackContext,
+  onProgress,
 }: {
   slackText: string;
   workdir: string;
   slackContext: SlackContext | null;
+  onProgress?: (payload: { stage: "draft" | "refined"; text: string }) => void;
 }) {
   const prompt = buildMentionPrompt(slackText, slackContext);
   try {
     const { stdout } = await runCodexExec({ prompt, cwd: workdir });
-    const text = formatMentionReply((stdout || "").trim());
-    if (!text) {
+    const draft = formatMentionReply((stdout || "").trim());
+    if (!draft) {
       throw new Error("Empty response from codex.");
     }
-    return { ok: true, text };
+    await onProgress?.({ stage: "draft", text: draft });
+
+    const refineEnabled =
+      process.env.CODEX_REFINE === undefined ||
+      (process.env.CODEX_REFINE !== "0" &&
+        process.env.CODEX_REFINE !== "false");
+    if (refineEnabled) {
+      const refinePrompt = buildRefinePrompt({
+        slackText,
+        slackContext,
+        draft,
+      });
+      try {
+        const { stdout: refinedStdout } = await runCodexExec({
+          prompt: refinePrompt,
+          cwd: workdir,
+        });
+        const refined = formatMentionReply((refinedStdout || "").trim());
+        if (refined && refined !== draft) {
+          await onProgress?.({ stage: "refined", text: refined });
+          return { ok: true, text: refined, refined: true };
+        }
+      } catch (e) {
+        console.warn("respondMention refine failed", {
+          error: (e as ExecError)?.message,
+          stderr: (e as ExecError)?.stderr,
+          stdout: (e as ExecError)?.stdout,
+        });
+      }
+    }
+
+    return { ok: true, text: draft, refined: false };
   } catch (e) {
     const hint = diagnoseFailure(e as ExecError);
     console.error("respondMention failed", {
