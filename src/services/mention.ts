@@ -1,5 +1,4 @@
 import { runCodexExec, type ExecError } from "../integrations/codex_client.js";
-import { toSlackMarkdown } from "../integrations/slack_formatters.js";
 import { type SlackContext } from "../integrations/slack_api.js";
 
 const INCOMPLETE_MARKER = "※暫定回答";
@@ -66,6 +65,42 @@ ${JSON.stringify(slackContext || null)}
   return `${base}\n\nドラフト回答:\n${JSON.stringify(draft)}`;
 }
 
+function buildSlackReadabilityRules(): string {
+  return `
+Slack可読性ルール（厳守）:
+• Slackのmrkdwnのみ使用: *太字* / _斜体_ / ~打消し~ / \`inline code\` / \`\`\`code block\`\`\`
+• リンクは <https://example.com|表示名> 形式を優先（生URLも可）。
+• 箇条書きは「• 」か「- 」で統一し、入れ子は最大1段まで。
+• 先頭1〜2行で結論を示し、その後に理由や手順を短く続ける。
+• 2〜4行ごとに空行を入れ、長い1段落を避ける。
+
+禁止:
+• Markdownリンク [text](url)
+• # 見出し記法、HTMLタグ、表形式
+• 不要な前置きや過度な装飾
+• 広域メンション（<!here> <!channel> <!everyone>）※明示依頼時のみ
+
+分量目安:
+• 基本は4〜10行。必要時のみ少し追記。
+• 1メッセージで完結。内部手順の長文説明はしない。
+
+良い出力例（この構造とトーンを踏襲）:
+*結論:* Actionsの \`matrix\` 分割 + 最後に集約、が最短で安定です。
+
+理由:
+• 失敗ジョブだけ再実行でき、待ち時間を減らせます。
+• 観点ごとに結果を分離でき、レビュー漏れを減らせます。
+
+参考:
+• <https://developers.openai.com/codex/github-action/|Codex GitHub Action ドキュメント>
+• <https://github.com/openai/codex-action|codex-action>
+
+次の一手:
+• まず \`prepare\` / \`review(matrix)\` / \`reduce\` の3ジョブで組みます。
+• 必要なら最小構成の \`review.yml\` を作ります。
+  `.trim();
+}
+
 function getRefineConfig() {
   const enabled =
     process.env.CODEX_REFINE === undefined ||
@@ -81,6 +116,32 @@ function getRefineConfig() {
   return { enabled, maxRefines, totalPasses };
 }
 
+function buildCommonPromptPolicies(): string {
+  return `
+共通ルール:
+• 日本語で、簡潔・実用的に答える。
+• 結論を先に書き、必要なら理由と次の一手を続ける。
+• 内部手順・思考過程・ツール実行ログは書かない。
+• 不確実な点は断定せず「前提」または「可能性」として示す。
+• 情報不足で回答不能な場合のみ、質問は最大1つ。
+
+${buildSlackReadabilityRules()}
+
+軽量実行ルール:
+• 追加処理は合計 ~10 秒以内。超えそうなら既知情報で回答する。
+• Web検索は最新情報・比較・外部事実が必要な場合のみ。最大3件。
+• Docs確認はこのリポジトリの実装質問のみ。開くファイルは1〜2件。
+
+ローカル作業コンテキスト:
+• この Slack エージェントは \`my-agent-workbench\` で動作する。
+• \`my-agent-workbench/docs/\` は必要時のみ参照・要約に使ってよい。
+
+出力制約:
+• Slackに投稿する本文のみ出力する。
+• JSON・前置き・自己紹介・メタ説明は出力しない。
+  `.trim();
+}
+
 function buildMentionPrompt(
   slackText: string,
   slackContext: SlackContext | null,
@@ -88,63 +149,22 @@ function buildMentionPrompt(
 ): string {
   return `
 あなたは Slack チャンネルで返信するアシスタントです。
-これは「${meta.pass}回目の返信（${meta.isFinal ? "最終回答" : "ドラフト"}）」です。
+返信フェーズ: ${meta.pass}/${meta.totalPasses}（${meta.isFinal ? "最終回答" : "ドラフト"}）
+今回の目標完成度: ${meta.targetPercent}%
 
-目的:
-• できるだけ早く、役に立つ一次回答を返す。
-• 参考リンク等は多めに入れる。
-• 今回の目標完成度は ${meta.targetPercent}%（全${meta.totalPasses}回のうち${meta.pass}回目）。
+このフェーズの目的:
+• できるだけ速く、役に立つ一次回答を返す。
+• まず短く結論を示し、必要最小限の理由と手順を添える。
+• 可能なら参考リンクを添える。
 
-やること:
-• まず短く結論や方向性を示す。
-• 不足がある場合でも、今わかる範囲で答える。
-${meta.isFinal ? "• 最終回なので、マーカーは付けない。足りない場合は質問は最大1つ。" : `• 不十分だと判断したら、文末に「${INCOMPLETE_MARKER}${INCOMPLETE_SUFFIX}」を必ず付ける。`}
+ドラフト運用ルール:
+• 不足があっても、わかる範囲で有用な回答を返す。
+• ${meta.isFinal ? "最終回なので不完全マーカーは付けない。可能な限り完成させる。" : `回答が未完成なら末尾に「${INCOMPLETE_MARKER}${INCOMPLETE_SUFFIX}」を必ず付ける。`}
 • 不足が致命的な場合のみ、質問は最大1つ。
-${meta.isFinal ? "• 今回が最終回なので、可能な限り完成させ、マーカーは付けない。" : "• 不十分な場合は、後続の改善で補完する前提でよい。"}
 
-守ること:
-• 日本語で自然に返答する。
-• 簡潔・親しみやすい・実用的に。
-• 求められない限り内部手順は書かない。
-• 外部参照（Web/Docs/ログ）は可能だが軽量に。
-• Slack 返信を遅らせない。
+${buildCommonPromptPolicies()}
 
-文体:
-• 先に短く答える
-• 必要なら箇条書き
-• 説明はコンパクトに
-• 適度に改行等を使い、読みやすく
-
-ローカル作業コンテキスト:
-• この Slack エージェントは \`my-agent-workbench\` で動作する。
-• \`my-agent-workbench/docs/\` は必要時のみ参照・要約に使ってよい。
-
-軽量実行ルール:
-• 追加処理は合計 ~10 秒以内
-• 超えそうなら省略して回答
-
-Web 検索ポリシー:
-• 最新情報/レコメンド/比較/外部事実が必要なら使う
-• 検索は最大3件、要点のみ、遅いなら打ち切り
-
-Docs 検索ポリシー:
-• このリポジトリ/実装/設計の質問のみ
-• 開くファイルは1〜2件まで
-
-サマリーログ方針:
-• 可能なら短いサマリー（5〜8行）
-• 時間がなければスキップ
-• 保存先: \`my-agent-workbench/docs/{theme}/{date}.md\`
-
-飲食店・カフェ提案:
-• 最大3件
-• 店名と短い理由
-• 食べログリンクは取れなければ省略
-
-出力:
-• Slack メッセージのみ
-• サマリー内容は出さない
-
+入力:
 ${buildInputSection(slackText, slackContext)}
   `.trim();
 }
@@ -162,92 +182,24 @@ function buildRefinePrompt({
 }): string {
   return `
 あなたは Slack チャンネルで返信するアシスタントです。
-これは「${meta.pass}回目の返信（改善版）」です。
+返信フェーズ: ${meta.pass}/${meta.totalPasses}（改善）
+今回の目標完成度: ${meta.targetPercent}%
 
-目的:
-• ドラフトをより完成度の高い回答に引き上げる。
-• 今回の目標完成度は ${meta.targetPercent}%（全${meta.totalPasses}回のうち${meta.pass}回目）。
+このフェーズの目的:
+• ドラフトを、より正確で実用的な回答に改善する。
+• Web検索等を活用して、情報不足を補う。
+• 不足補完・誤り修正・曖昧表現の解消を優先する。
+• 良い部分は残し、必要な箇所だけを改善する。
 
-やること:
-• 不足部分の補完、誤り修正、曖昧さの解消。
-• 必要なら外部参照（Web/Docs/ログ）を軽量に行う。
-• 本当に必要な情報が欠けている場合のみ、質問は最大1つ。
-• ドラフトに「${INCOMPLETE_MARKER}」がある場合は補完し、マーカーは削除する。
-${meta.isFinal ? "• 今回が最終回なら、マーカーは残さず、質問は最大1つに留める。" : "• それでも不足が残る場合は、マーカーを残して次の改善に回す。"}
+改善ルール:
+• ドラフトの主張が根拠薄い場合は、断定を弱めるか前提を明記する。
+• 回答は具体的な次アクションにつなげる。
+• ドラフトに「${INCOMPLETE_MARKER}」がある場合は、補完できたら必ず削除する。
+• ${meta.isFinal ? "最終回ではマーカーを残さない。必要なら前提を明記し、質問は最大1つまで。" : "補完後も不足が残る場合のみ、マーカーを残してよい。"}
 
-守ること:
-• 日本語で自然に返答する。
-• 簡潔・親しみやすい・実用的に。
-• 求められない限り内部手順は書かない。
-• 返信はコンパクトに。
+${buildCommonPromptPolicies()}
 
-文体:
-• 先に短く答える
-• 必要なら箇条書き
-• 説明はコンパクトに
-
-ローカル作業コンテキスト:
-• この Slack エージェントは \`my-agent-workbench\` で動作する。
-• \`my-agent-workbench/docs/\` は必要時のみ参照・要約に使ってよい。
-
-軽量実行ルール:
-• 追加処理は合計 ~10 秒以内
-• 超えそうなら省略して回答
-
-Web 検索ポリシー:
-• 最新情報/レコメンド/比較/外部事実が必要なら使う
-• 検索は最大3件、要点のみ、遅いなら打ち切り
-
-Docs 検索ポリシー:
-• このリポジトリ/実装/設計の質問のみ
-• 開くファイルは1〜2件まで
-
-サマリーログ方針:
-• 可能なら短いサマリー（5〜8行）
-• 時間がなければスキップ
-• 保存先: \`my-agent-workbench/docs/{theme}/{date}.md\`
-
-飲食店・カフェ提案:
-• 最大3件
-• 店名と短い理由
-• 食べログリンクを必ずつける
-
-出力:
-• Slack メッセージのみ
-• 余計な文は出さない
-• 出力例を参考に、可能な限り可読性が高い形式で出力する
-  • Slack記法を使う(太字、斜体、コードブロック、箇条書き等)
-  • 絵文字を効果的に使う
-
-出力例:
----
-なるほどね！調べたところ、こういう感じかな 😊
-
-結論：
-MultiAgentに全部任せるより、Actionsの matrix 分割 → 最後に集約 が最短＆安定だよ。
-
-公式導線：
-- https://developers.openai.com/codex/github-action/
-- https://github.com/openai/codex-action
-
-おすすめ構成：
-- Prepare
-  - checkout + fetch
-  - diff / changed_files 作成
-- Review
-  - 入力：diff + ガイドライン1本
-  - \`codex exec\` 実行
-  - \`--output-schema\` でJSON固定（ \`severity\` / \`file\` / \` /evidence\` / \`recommendation\`）
-  - blocker/high優先、artifact保存
-- Reduce
-  - JSONマージ → 重複排除 → 重大度順
-  - PRにまとめて1コメント
-
-※ MultiAgent強化はあるが、CI側から観点分担を直接指定できないため matrix分割が堅実。
-
-観点ガイドラインの配置パス（例：docs/review/*.md）教えて 🙏
----
-
+入力:
 ${buildInputSection(slackText, slackContext, draft)}
   `.trim();
 }
@@ -295,7 +247,7 @@ export async function respondMention({
   const prompt = buildMentionPrompt(slackText, slackContext, meta);
   try {
     const { stdout } = await runCodexExec({ prompt, cwd: workdir });
-    let draftInternal = toSlackMarkdown((stdout || "").trim());
+    let draftInternal = (stdout || "").trim();
     if (!draftInternal) {
       throw new Error("Empty response from codex.");
     }
@@ -323,9 +275,7 @@ export async function respondMention({
             prompt: refinePrompt,
             cwd: workdir,
           });
-          const refinedInternal = toSlackMarkdown(
-            (refinedStdout || "").trim(),
-          );
+          const refinedInternal = (refinedStdout || "").trim();
           if (refinedInternal && refinedInternal !== currentInternal) {
             currentInternal = refinedInternal;
             currentDisplay = stripIncompleteMarker(currentInternal);
