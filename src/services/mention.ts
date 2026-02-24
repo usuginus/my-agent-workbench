@@ -68,11 +68,12 @@ ${JSON.stringify(slackContext || null)}
 function buildSlackReadabilityRules(): string {
   return `
 Slack可読性ルール（厳守）:
-• Slackのmrkdwnのみ使用: *太字* / _斜体_ / ~打消し~ / \`inline code\` / \`\`\`code block\`\`\`
+• Slackのmrkdwnのみ使用: *太字* / \`inline code\` / \`\`\`code block\`\`\`
 • リンクは <https://example.com|表示名> 形式を優先（生URLも可）。
-• 箇条書きは「• 」か「- 」で統一し、入れ子は最大1段まで。
+• 箇条書きは「- 」で統一し、入れ子は最大2段まで。
 • 先頭1〜2行で結論を示し、その後に理由や手順を短く続ける。
 • 2〜4行ごとに空行を入れ、長い1段落を避ける。
+• *太字* / \`inline code\` は前後に一つスペースが無いと認識されないので注意。
 
 禁止:
 • Markdownリンク [text](url)
