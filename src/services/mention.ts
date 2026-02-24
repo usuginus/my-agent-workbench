@@ -70,7 +70,7 @@ function buildSlackReadabilityRules(): string {
 Slack可読性ルール（厳守）:
 • Slackのmrkdwnのみ使用: *太字* / \`inline code\` / \`\`\`code block\`\`\`
 • リンクは <https://example.com|表示名> 形式を優先（生URLも可）。
-• 箇条書きは「- 」で統一し、入れ子は最大2段まで。
+• 箇条書きは「・ 」で統一し、入れ子は最大2段まで。
 • 先頭1〜2行で結論を示し、その後に理由や手順を短く続ける。
 • 2〜4行ごとに空行を入れ、長い1段落を避ける。
 • *太字* / \`inline code\` は前後に一つスペースが無いと認識されないので注意。
@@ -89,12 +89,12 @@ Slack可読性ルール（厳守）:
 *結論:* Actionsの \`matrix\` 分割 + 最後に集約、が最短で安定です。
 
 理由:
-• 失敗ジョブだけ再実行でき、待ち時間を減らせます。
-• 観点ごとに結果を分離でき、レビュー漏れを減らせます。
+・ 失敗ジョブだけ再実行でき、待ち時間を減らせます。
+・ 観点ごとに結果を分離でき、レビュー漏れを減らせます。
 
 参考:
-• <https://developers.openai.com/codex/github-action/|Codex GitHub Action ドキュメント>
-• <https://github.com/openai/codex-action|codex-action>
+・ <https://developers.openai.com/codex/github-action/|Codex GitHub Action ドキュメント>
+・ <https://github.com/openai/codex-action|codex-action>
 
 次の一手:
 • まず \`prepare\` / \`review(matrix)\` / \`reduce\` の3ジョブで組みます。
