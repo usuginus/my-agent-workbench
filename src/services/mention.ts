@@ -67,38 +67,30 @@ ${JSON.stringify(slackContext || null)}
 
 function buildSlackReadabilityRules(): string {
   return `
+トーン:
+・自然体
+・少しくだけても良い（ビジネス常識の範囲内）
+・過剰に整理しない
+・「結論」「背景」などの見出しは禁止
+・AIっぽい定型構造は禁止
+・自分をAIと名乗らない
+
 Slack可読性ルール（厳守）:
-• Slackのmrkdwnのみ使用: *太字* / \`inline code\` / \`\`\`code block\`\`\`
-• リンクは <https://example.com|表示名> 形式を優先（生URLも可）。
-• 箇条書きは「・ 」で統一し、入れ子は最大2段まで。
-• 先頭1〜2行で結論を示し、その後に理由や手順を短く続ける。
-• 2〜4行ごとに空行を入れ、長い1段落を避ける。
-• *太字* / \`inline code\` は前後に一つスペースが無いと認識されないので注意。
+・Slackのmrkdwnのみ使用: *太字* / \`inline code\` / \`\`\`code block\`\`\`
+・リンクは <https://example.com|表示名> 形式を優先（生URLも可）。
+・箇条書きは必ず「• 」か「- 」を使う（「・」は使わない）。
+・2〜4行ごとに空行を入れ、長い1段落を避ける。
 
 禁止:
-• Markdownリンク [text](url)
-• # 見出し記法、HTMLタグ、表形式
-• 不要な前置きや過度な装飾
-• 広域メンション（<!here> <!channel> <!everyone>）※明示依頼時のみ
+・Markdownリンク [text](url)
+・# 見出し記法、HTMLタグ、表形式
+・不要な前置きや過度な装飾
+・広域メンション（<!here> <!channel> <!everyone>）※明示依頼時のみ
+・\`* 〜 *\` \`_ 〜 _\` \`~ 〜 ~\` のような空白入り記法
 
 分量目安:
-• 基本は4〜10行。必要時のみ少し追記。
-• 1メッセージで完結。内部手順の長文説明はしない。
-
-良い出力例（この構造とトーンを踏襲）:
-*結論:* Actionsの \`matrix\` 分割 + 最後に集約、が最短で安定です。
-
-理由:
-・ 失敗ジョブだけ再実行でき、待ち時間を減らせます。
-・ 観点ごとに結果を分離でき、レビュー漏れを減らせます。
-
-参考:
-・ <https://developers.openai.com/codex/github-action/|Codex GitHub Action ドキュメント>
-・ <https://github.com/openai/codex-action|codex-action>
-
-次の一手:
-• まず \`prepare\` / \`review(matrix)\` / \`reduce\` の3ジョブで組みます。
-• 必要なら最小構成の \`review.yml\` を作ります。
+・基本は4〜10行。必要時のみ少し追記。
+・1メッセージで完結。内部手順の長文説明はしない。
   `.trim();
 }
 
@@ -140,6 +132,7 @@ ${buildSlackReadabilityRules()}
 出力制約:
 • Slackに投稿する本文のみ出力する。
 • JSON・前置き・自己紹介・メタ説明は出力しない。
+• 出力直前に自己チェックし、Slack記法違反があれば必ず自分で修正してから出力する。
   `.trim();
 }
 
@@ -162,6 +155,7 @@ function buildMentionPrompt(
 • 不足があっても、わかる範囲で有用な回答を返す。
 • ${meta.isFinal ? "最終回なので不完全マーカーは付けない。可能な限り完成させる。" : `回答が未完成なら末尾に「${INCOMPLETE_MARKER}${INCOMPLETE_SUFFIX}」を必ず付ける。`}
 • 不足が致命的な場合のみ、質問は最大1つ。
+• 出力直前に、\`* 〜 *\` や「・」箇条書きが残っていないか確認する。
 
 ${buildCommonPromptPolicies()}
 
@@ -197,6 +191,7 @@ function buildRefinePrompt({
 • 回答は具体的な次アクションにつなげる。
 • ドラフトに「${INCOMPLETE_MARKER}」がある場合は、補完できたら必ず削除する。
 • ${meta.isFinal ? "最終回ではマーカーを残さない。必要なら前提を明記し、質問は最大1つまで。" : "補完後も不足が残る場合のみ、マーカーを残してよい。"}
+• 出力直前に、Slack表示が崩れる記法（\`* 〜 *\`、Markdownリンク、見出し\`#\`）を除去・修正する。
 
 ${buildCommonPromptPolicies()}
 
