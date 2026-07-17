@@ -10,6 +10,7 @@ import {
   buildResearchStatusBlocks,
   NOMIKAI_CLOSE_ACTION,
   NOMIKAI_VOTE_ACTION,
+  sendSlackMessage,
   type MessagePayload,
 } from "../integrations/slack_blocks.js";
 import { planHangout, formatSearchConditions } from "../services/hangout.js";
@@ -71,7 +72,10 @@ app.command("/nomikai", async ({ command, ack, say }) => {
     closed: false,
   };
   const payload = buildNomikaiBlocks(provisionalPoll);
-  const posted = await say({ ...payload, text: payload.text });
+  let posted: Awaited<ReturnType<typeof say>> | undefined;
+  await sendSlackMessage("nomikai_card", payload, async (p) => {
+    posted = await say({ ...p });
+  });
   if (posted?.ts) {
     createPoll(pollKey(command.channel_id, posted.ts), {
       requesterId: command.user_id,
@@ -111,7 +115,9 @@ app.action(NOMIKAI_VOTE_ACTION, async ({ ack, body, action, client }) => {
     return;
   }
   const payload = buildNomikaiBlocks(poll);
-  await client.chat.update({ channel: channelId, ts: messageTs, ...payload });
+  await sendSlackMessage("nomikai_vote_update", payload, (p) =>
+    client.chat.update({ channel: channelId, ts: messageTs, ...p }),
+  );
 });
 
 app.action(NOMIKAI_CLOSE_ACTION, async ({ ack, body, client }) => {
@@ -133,7 +139,9 @@ app.action(NOMIKAI_CLOSE_ACTION, async ({ ack, body, client }) => {
     return;
   }
   const payload = buildNomikaiBlocks(poll);
-  await client.chat.update({ channel: channelId, ts: messageTs, ...payload });
+  await sendSlackMessage("nomikai_close_update", payload, (p) =>
+    client.chat.update({ channel: channelId, ts: messageTs, ...p }),
+  );
 
   if (!alreadyClosed) {
     const winner =
@@ -177,11 +185,9 @@ app.event("app_mention", async ({ event, say, client }) => {
 
     const updateStatus = async (payload: MessagePayload) => {
       if (!statusTs) return;
-      await client.chat.update({
-        channel: event.channel,
-        ts: statusTs,
-        ...payload,
-      });
+      await sendSlackMessage("research_status", payload, (p) =>
+        client.chat.update({ channel: event.channel, ts: statusTs, ...p }),
+      );
     };
 
     void (async () => {
@@ -224,11 +230,13 @@ app.event("app_mention", async ({ event, say, client }) => {
           });
           await updateStatus(pages[0]);
           for (const page of pages.slice(1)) {
-            await client.chat.postMessage({
-              channel: event.channel,
-              thread_ts: threadTs,
-              ...page,
-            });
+            await sendSlackMessage("research_report_page", page, (p) =>
+              client.chat.postMessage({
+                channel: event.channel,
+                thread_ts: threadTs,
+                ...p,
+              }),
+            );
           }
           recordInteraction(
             {
@@ -322,15 +330,11 @@ app.event("app_mention", async ({ event, say, client }) => {
       pass: opts.pass,
       totalPasses: opts.totalPasses,
     });
-    if (thinkingTs) {
-      await client.chat.update({
-        channel: event.channel,
-        ts: thinkingTs,
-        ...payload,
-      });
-    } else {
-      await say({ ...payload, thread_ts: threadTs });
-    }
+    await sendSlackMessage("mention_reply", payload, (p) =>
+      thinkingTs
+        ? client.chat.update({ channel: event.channel, ts: thinkingTs, ...p })
+        : say({ ...p, thread_ts: threadTs }),
+    );
   };
 
   const result = await respondMention({

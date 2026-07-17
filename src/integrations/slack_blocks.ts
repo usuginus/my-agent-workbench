@@ -14,12 +14,45 @@ export function fallbackText(text: string): string {
   return t.length > FALLBACK_LIMIT ? `${t.slice(0, FALLBACK_LIMIT)}…` : t;
 }
 
+// 単一 section に直接埋め込む LLM 出力用。3000 字制限と全体上限の両方から身を守る
+function clamp(text: string, max: number): string {
+  const t = (text || "").trim();
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
 export type Block = Record<string, any>;
 
 export type MessagePayload = {
   text: string;
   blocks: Block[];
 };
+
+/**
+ * Slack への送信を包む安全弁。失敗時にペイロードサイズを必ずログし、
+ * サイズ起因（msg_too_long / invalid_blocks）ならテキストのみに落として届け直す。
+ */
+export async function sendSlackMessage(
+  label: string,
+  payload: MessagePayload,
+  send: (payload: MessagePayload) => Promise<unknown>,
+): Promise<void> {
+  try {
+    await send(payload);
+  } catch (e: any) {
+    const code = e?.data?.error || e?.message;
+    console.error(`slack send failed [${label}]`, {
+      error: code,
+      textChars: payload.text?.length ?? 0,
+      blockCount: payload.blocks?.length ?? 0,
+      blocksJsonChars: JSON.stringify(payload.blocks ?? []).length,
+    });
+    if (code === "msg_too_long" || code === "invalid_blocks") {
+      await send({ text: fallbackText(payload.text || "…"), blocks: [] });
+      return;
+    }
+    throw e;
+  }
+}
 
 function section(text: string): Block {
   return { type: "section", text: { type: "mrkdwn", text } };
@@ -223,7 +256,8 @@ export function buildResearchStatusBlocks({
     blocks.push(section("🧭 調査プランを組み立て中…"));
   } else {
     if (plan) {
-      blocks.push(section(`*調査プラン*\n${sanitizeForSlack(plan)}`));
+      // プランは表示用。プラン立案パスが暴走して長文を返しても壊れないよう切り詰める
+      blocks.push(section(`*調査プラン*\n${clamp(sanitizeForSlack(plan), 2000)}`));
     }
     blocks.push(
       section("🔍 調査中… Web を漁ってるから数分待ってて"),
@@ -317,7 +351,7 @@ export function buildNomikaiBlocks(poll: Poll): MessagePayload {
 
   poll.candidates.forEach((c, i) => {
     const isWinner = poll.closed && poll.winnerIndex === i;
-    const title = `${isWinner ? "👑 " : ""}*${i + 1}. ${c.name}*`;
+    const title = `${isWinner ? "👑 " : ""}*${i + 1}. ${clamp(c.name, 120)}*`;
     const meta = [
       c.budget_yen ? `¥${c.budget_yen.toLocaleString()}` : null,
       c.walk_min ? `徒歩${c.walk_min}分` : null,
@@ -327,7 +361,7 @@ export function buildNomikaiBlocks(poll: Poll): MessagePayload {
       .join(" / ");
     const lines = [
       `${title}${meta ? `\n${meta}` : ""}`,
-      sanitizeForSlack(c.reason || ""),
+      clamp(sanitizeForSlack(c.reason || ""), 1000),
       c.tabelog_url ? `<${c.tabelog_url}|食べログで見る>` : "",
     ]
       .filter(Boolean)
@@ -372,7 +406,9 @@ export function buildNomikaiBlocks(poll: Poll): MessagePayload {
   }
 
   if (poll.finalMessage) {
-    blocks.push(section(`📣 *集合メッセージ*\n${sanitizeForSlack(poll.finalMessage)}`));
+    blocks.push(
+      section(`📣 *集合メッセージ*\n${clamp(sanitizeForSlack(poll.finalMessage), 2000)}`),
+    );
   }
 
   const fallback = poll.candidates

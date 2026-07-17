@@ -8,6 +8,7 @@ import { sanitizeForSlack } from "../integrations/slack_formatters.js";
 import {
   fallbackText,
   mrkdwnSections,
+  sendSlackMessage,
   type MessagePayload,
 } from "../integrations/slack_blocks.js";
 import { loadMemoryContext } from "./memory.js";
@@ -132,7 +133,9 @@ export async function postNewsDigest(
       ],
     };
     const client = new WebClient(token);
-    await client.chat.postMessage({ channel: channelId, ...payload });
+    await sendSlackMessage("news_digest", payload, (p) =>
+      client.chat.postMessage({ channel: channelId, ...p }),
+    );
     return { ok: true, text, channelId };
   } catch (e) {
     const hint = diagnoseCodexFailure(e as ExecError);
