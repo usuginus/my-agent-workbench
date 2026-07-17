@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { App } from "@slack/bolt";
+import cron from "node-cron";
 import { stripBotMention } from "../integrations/slack_formatters.js";
 import {
   buildMentionBlocks,
@@ -16,6 +17,7 @@ import { respondMention } from "../services/mention.js";
 import { isResearchRequest, runResearch } from "../services/research.js";
 import { buildSlackContext } from "../integrations/slack_api.js";
 import { loadMemoryContext, recordInteraction } from "../services/memory.js";
+import { getNewsConfig, postNewsDigest } from "../services/news.js";
 import { closePoll, createPoll, getPoll, pollKey, toggleVote } from "../services/polls.js";
 
 const app = new App({
@@ -354,3 +356,26 @@ app.event("app_mention", async ({ event, say, client }) => {
 
 await app.start();
 console.log("⚡️ slack bot is running (Socket Mode)");
+
+// ---- 夕方ニュース便（NEWS_CHANNEL_ID 設定時のみ稼働） ----
+
+const newsConfig = getNewsConfig();
+if (newsConfig.channelId) {
+  let expr = newsConfig.cron;
+  if (!cron.validate(expr)) {
+    console.warn(`invalid NEWS_CRON "${expr}", falling back to 17:30 JST`);
+    expr = "30 17 * * *";
+  }
+  cron.schedule(
+    expr,
+    () => {
+      postNewsDigest().catch((e) =>
+        console.error("news digest crashed", (e as Error)?.message),
+      );
+    },
+    { timezone: "Asia/Tokyo" },
+  );
+  console.log(
+    `🗞 news digest scheduled: "${expr}" (Asia/Tokyo) -> ${newsConfig.channelId}`,
+  );
+}
