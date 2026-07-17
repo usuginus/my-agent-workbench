@@ -1,6 +1,7 @@
 import { runCodexExec, type ExecError } from "../integrations/codex_client.js";
-import { toSlackMarkdown } from "../integrations/slack_formatters.js";
+import { sanitizeForSlack } from "../integrations/slack_formatters.js";
 import { type SlackContext } from "../integrations/slack_api.js";
+import { type MemoryContext } from "./memory.js";
 
 const JSON_SCHEMA = `{
   "candidates": [
@@ -11,7 +12,8 @@ const JSON_SCHEMA = `{
 
 function buildHangoutPrompt(
   slackText: string,
-  slackContext: SlackContext | null
+  slackContext: SlackContext | null,
+  memory: MemoryContext | null,
 ) {
   return `
 You are a hangout planning assistant.
@@ -22,6 +24,9 @@ ${JSON.stringify(slackText)}
 Slack context (JSON, if available):
 ${JSON.stringify(slackContext || null)}
 
+Long-term memory about this workspace and its people (may inform preferences like favorite areas or food):
+${memory?.portal || "(none)"}
+
 Rules:
 - Output VALID JSON ONLY. No markdown. No prose.
 - Follow this JSON schema exactly:
@@ -30,6 +35,7 @@ ${JSON_SCHEMA}
 - If information is missing, make reasonable assumptions instead of asking questions.
 - Include a Tabelog URL for each candidate in "tabelog_url".
 - Use the user's locale and context when possible. If unclear, assume Japan and typical local venues.
+- Write "reason" and "final_message" in Japanese.
 `.trim();
 }
 
@@ -80,16 +86,16 @@ function formatHangoutMessage(plan: {
   const lines = [];
   lines.push(`🍻 *候補（3件）*`);
   for (const [i, c] of plan.candidates.entries()) {
-    const reason = toSlackMarkdown(c.reason || "");
-    const urlLine = c.tabelog_url ? `• <${c.tabelog_url}|食べログ>` : "";
+    const reason = sanitizeForSlack(c.reason || "");
+    const urlLine = c.tabelog_url ? `・<${c.tabelog_url}|食べログ>` : "";
     lines.push(
       `*${i + 1}. ${c.name}* (¥${c.budget_yen} / 徒歩${c.walk_min}分 / ${
         c.vibe
-      })\n• ${reason}${urlLine ? `\n${urlLine}` : ""}`
+      })\n・${reason}${urlLine ? `\n${urlLine}` : ""}`
     );
   }
   if (plan.final_message) {
-    lines.push(`\n📣 *集合メッセージ*\n${toSlackMarkdown(plan.final_message)}`);
+    lines.push(`\n📣 *集合メッセージ*\n${sanitizeForSlack(plan.final_message)}`);
   }
   return lines.join("\n");
 }
@@ -116,12 +122,14 @@ export async function planHangout({
   slackText,
   workdir,
   slackContext,
+  memory,
 }: {
   slackText: string;
   workdir: string;
   slackContext: SlackContext | null;
+  memory?: MemoryContext | null;
 }) {
-  const prompt1 = buildHangoutPrompt(slackText, slackContext);
+  const prompt1 = buildHangoutPrompt(slackText, slackContext, memory ?? null);
 
   try {
     const { stdout } = await runCodexExec({ prompt: prompt1, cwd: workdir });
@@ -149,11 +157,11 @@ export async function planHangout({
         ok: false,
         text: debugEnabled
           ? `⚠️ 提案を生成できませんでした。\n原因: ${hint}`
-          : `⚠️ 提案を生成できませんでした。条件を短くしてもう一度試してください。（例: \`/hangout 六本木 5000 4 19:30\`）\n原因: ${hint}`,
+          : `⚠️ 提案を生成できませんでした。条件を短くしてもう一度試してください。（例: \`/nomikai 六本木 5000 4 19:30\`）\n原因: ${hint}`,
         debug: {
-          error1: e1?.message,
-          error2: e2?.message,
-          stderr: e2?.stderr ?? e1?.stderr,
+          error1: (e1 as ExecError)?.message,
+          error2: (e2 as ExecError)?.message,
+          stderr: (e2 as ExecError)?.stderr ?? (e1 as ExecError)?.stderr,
         },
       };
     }

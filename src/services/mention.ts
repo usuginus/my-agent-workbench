@@ -1,5 +1,6 @@
 import { runCodexExec, type ExecError } from "../integrations/codex_client.js";
 import { type SlackContext } from "../integrations/slack_api.js";
+import { type MemoryContext } from "./memory.js";
 
 const INCOMPLETE_MARKER = "※暫定回答";
 const INCOMPLETE_SUFFIX = "（追記予定）";
@@ -47,57 +48,180 @@ function buildMeta(pass: number, totalPasses: number): PromptMeta {
   };
 }
 
-function buildInputSection(
-  slackText: string,
-  slackContext: SlackContext | null,
-  draft?: string,
-): string {
-  const base = `
-ユーザーメッセージ:
-${JSON.stringify(slackText)}
-
-Slack コンテキスト（JSON / ある場合）:
-${JSON.stringify(slackContext || null)}
-  `.trim();
-
-  if (!draft) return base;
-
-  return `${base}\n\nドラフト回答:\n${JSON.stringify(draft)}`;
+function nowJst(): string {
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date());
 }
 
-function buildSlackReadabilityRules(): string {
+function buildContextSection({
+  slackText,
+  slackContext,
+  memory,
+  draft,
+}: {
+  slackText: string;
+  slackContext: SlackContext | null;
+  memory: MemoryContext | null;
+  draft?: string;
+}): string {
+  const parts = [
+    `現在日時: ${nowJst()} (JST)`,
+    "",
+    "## 長期記憶ポータル（過去のやり取りから蒸留した記憶）",
+    memory?.portal?.trim() || "（記憶なし）",
+  ];
+
+  if (memory?.request_user) {
+    parts.push(
+      "",
+      "## 発言者について記憶していること (JSON)",
+      JSON.stringify(memory.request_user),
+    );
+  }
+  if (memory?.channel) {
+    parts.push(
+      "",
+      "## このチャンネルについて記憶していること (JSON)",
+      JSON.stringify(memory.channel),
+    );
+  }
+
+  parts.push(
+    "",
+    "## Slack の現在の状況 (JSON)",
+    JSON.stringify(slackContext || null),
+    "",
+    "## ユーザーメッセージ（これに答える）",
+    JSON.stringify(slackText),
+  );
+
+  if (draft) {
+    parts.push("", "## 改善対象のドラフト回答", JSON.stringify(draft));
+  }
+
+  return parts.join("\n");
+}
+
+function buildCommonPromptPolicies(): string {
   return `
-トーン:
-・自然体
-・くだけた口調で良い
-・過剰に整理しない
-・「結論」「背景」「次の一手」などの見出しは禁止
-・AIっぽい定型構造は禁止
-・自分をAIと名乗らない
-・「なんか人が書いたっぽい文章」を意識する
+# 使える情報の優先順位
+1. ユーザーメッセージ。これに直接答える。
+2. スレッド・チャンネルの直近メッセージ。会話の文脈として使う。
+3. 長期記憶（ポータル・発言者・チャンネル）。相手の役割・好み・過去の経緯を自然に活かす。最新の Slack 情報と矛盾したら Slack 側を信じる。
+4. Web検索。最新性・外部の事実・比較が少しでも絡むなら、回答前に必ず使う。複数ソースを照合する。
+5. さらに詳しい記憶が必要なら \`memory/\` ディレクトリ（people/ channels/ log/）を読んでよい。
 
-Slack可読性ルール（厳守）:
-・Slackのmrkdwnのみ使用: *太字* / \`inline code\` / \`\`\`code block\`\`\`
-・リンクは <https://example.com|表示名> 形式を優先（生URLも可）。
-・箇条書きは必ず「・」を使う。
-  ・適切にインデントして、階層構造を示すのも良い。
-・適切に空行を入れ、長い1段落を避ける。
+# 回答の作り方
+・最初の1〜2行で結論を言い切る。理由・手順は必要最小限を続ける。
+・具体的な次アクションで締める。
+・不確実な点は断定せず「たぶん」「〜のはず」と正直に言う。
+・情報不足で答えようがない時だけ、質問を1つだけ返す。
+・内部手順・思考過程・ツール実行ログは書かない。自分を AI と名乗らない。
 
-禁止:
-・Markdownリンク [text](url)
-・# 見出し記法、HTMLタグ、表形式
-・不要な前置きや過度な装飾
-・広域メンション（<!here> <!channel> <!everyone>）※明示依頼時のみ
-・* 〜 * のような空白入り記法
-・「これは*重要*です」のような記法
-  ・「これは *重要* です」と書く
-  ・「・ *これは重要* です」と書く
-  ・「これは、 *重要* です」と書く
+# Slack mrkdwn ルール（重要: Slack は GitHub Markdown を表示できない）
+使ってよい記法:
+・太字は *太字*（アスタリスク1個、内側に空白を入れない、前後に空白を置く）
+・コードは \`inline\` と \`\`\`ブロック\`\`\`
+・リンクは <https://example.com|表示名> 形式（生URLも可）
+・箇条書きは「・」。インデントで階層を表してよい。
+・適度に空行を入れ、長い1段落を避ける。
 
-分量目安:
-・基本は4〜20行。必要時のみ少し追記。
-・1メッセージで完結。内部手順の長文説明はしない。
+禁止（Slack で崩れる）:
+・**太字** や __太字__（アスタリスク2個は使えない）
+・[表示名](URL) 形式の Markdown リンク
+・# 見出し、表、HTMLタグ
+・<!here> <!channel> <!everyone>（明示的に依頼された時のみ）
+
+良い例:
+これ、 *結論から言うと* 明日までに終わるよ
+・手順は <https://example.com|このページ> の通り
+
+悪い例（絶対に出力しない）:
+**結論**: 明日までに終わります
+- 手順は [このページ](https://example.com) の通り
+
+# 出力
+・Slack に投稿する本文のみ。前置き・自己紹介・メタ説明・JSON は出力しない。
+・基本は4〜20行。1メッセージで完結させる。
   `.trim();
+}
+
+function buildMentionPrompt({
+  slackText,
+  slackContext,
+  memory,
+  meta,
+}: {
+  slackText: string;
+  slackContext: SlackContext | null;
+  memory: MemoryContext | null;
+  meta: PromptMeta;
+}): string {
+  return `
+あなたは Slack ワークスペースの一員として、メンションに返信するアシスタントです。
+口調・人格はこのリポジトリの AGENTS.md に従ってください。
+
+返信フェーズ: ${meta.pass}/${meta.totalPasses}（${meta.isFinal ? "最終回答" : "一次回答ドラフト"}）／目標完成度: ${meta.targetPercent}%
+
+# このフェーズの目的
+・速さ優先。まず役に立つ一次回答を返す（調査は最大 ~30 秒、検索は1〜3件まで）。
+・わかる範囲で結論を出す。完璧さは後続の改善フェーズに任せてよい。
+${meta.isFinal ? "・最終回なので不完全マーカーは付けず、可能な限り完成させる。" : `・回答が未完成なら末尾に「${INCOMPLETE_MARKER}${INCOMPLETE_SUFFIX}」を必ず付ける。`}
+
+${buildCommonPromptPolicies()}
+
+# 入力
+${buildContextSection({ slackText, slackContext, memory })}
+  `.trim();
+}
+
+function buildRefinePrompt({
+  slackText,
+  slackContext,
+  memory,
+  draft,
+  meta,
+}: {
+  slackText: string;
+  slackContext: SlackContext | null;
+  memory: MemoryContext | null;
+  draft: string;
+  meta: PromptMeta;
+}): string {
+  return `
+あなたは Slack ワークスペースの一員として、メンションに返信するアシスタントです。
+口調・人格はこのリポジトリの AGENTS.md に従ってください。
+
+返信フェーズ: ${meta.pass}/${meta.totalPasses}（ドラフト改善）／目標完成度: ${meta.targetPercent}%
+
+# このフェーズの目的
+・ドラフトをより正確で実用的な回答に改善する。良い部分は残し、必要な箇所だけ直す。
+・Web検索でファクトチェックし、情報不足の補完・誤りの修正・曖昧表現の解消を優先する。
+・根拠の薄い主張は、断定を弱めるか前提を明記する。
+・ドラフトに「${INCOMPLETE_MARKER}」があり補完できたら必ず削除する。
+${meta.isFinal ? "・最終回なのでマーカーは残さない。埋めきれない場合は前提を明記して完成形にする。" : "・補完後も本質的な不足が残る場合のみ、マーカーを残してよい。"}
+
+${buildCommonPromptPolicies()}
+
+# 入力
+${buildContextSection({ slackText, slackContext, memory, draft })}
+  `.trim();
+}
+
+function stripIncompleteMarker(text: string): string {
+  let out = text || "";
+  out = out.replace(INCOMPLETE_MARKER_PATTERN, "");
+  return out
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function getRefineConfig() {
@@ -113,108 +237,6 @@ function getRefineConfig() {
         : 0;
   const totalPasses = 1 + maxRefines;
   return { enabled, maxRefines, totalPasses };
-}
-
-function buildCommonPromptPolicies(): string {
-  return `
-共通ルール:
-• 日本語で、簡潔・実用的に答える。
-• 結論を先に書き、必要なら理由と次の一手を続ける。
-• 内部手順・思考過程・ツール実行ログは書かない。
-• 不確実な点は断定せず「前提」または「可能性」として示す。
-• 情報不足で回答不能な場合のみ、質問は最大1つ。
-
-${buildSlackReadabilityRules()}
-
-軽量実行ルール:
-• 追加処理は合計 ~30 秒以内。超えそうなら既知情報で回答する。
-• 外部事実・最新性・比較が少しでも関係する場合は、回答前に必ずWeb検索して確認する。
-• Web検索は遠慮なく使ってよい。必要に応じて最大10件まで確認する。
-• 検索結果は複数ソースを照合し、古い情報や不一致があればその旨を短く明記する。
-• Docs確認はこのリポジトリの実装質問のみ。開くファイルは1〜2件。
-
-ローカル作業コンテキスト:
-• この Slack エージェントは \`my-agent-workbench\` で動作する。
-• \`my-agent-workbench/docs/\` は必要時のみ参照・要約に使ってよい。
-
-出力制約:
-• Slackに投稿する本文のみ出力する。
-• JSON・前置き・自己紹介・メタ説明は出力しない。
-• 出力直前に自己チェックし、Slack記法違反があれば必ず自分で修正してから出力する。
-  `.trim();
-}
-
-function buildMentionPrompt(
-  slackText: string,
-  slackContext: SlackContext | null,
-  meta: PromptMeta,
-): string {
-  return `
-あなたは Slack チャンネルで返信するアシスタントです。
-返信フェーズ: ${meta.pass}/${meta.totalPasses}（${meta.isFinal ? "最終回答" : "ドラフト"}）
-今回の目標完成度: ${meta.targetPercent}%
-
-このフェーズの目的:
-• できるだけ速く、役に立つ一次回答を返す。
-• まず短く結論を示し、必要最小限の理由と手順を添える。
-• 可能なら参考リンクを添える。
-
-ドラフト運用ルール:
-• 不足があっても、わかる範囲で有用な回答を返す。
-• ${meta.isFinal ? "最終回なので不完全マーカーは付けない。可能な限り完成させる。" : `回答が未完成なら末尾に「${INCOMPLETE_MARKER}${INCOMPLETE_SUFFIX}」を必ず付ける。`}
-• 不足が致命的な場合のみ、質問は最大1つ。
-• 出力直前に、\`* 〜 *\` などの禁止された記法が残っていないか確認する。
-
-${buildCommonPromptPolicies()}
-
-入力:
-${buildInputSection(slackText, slackContext)}
-  `.trim();
-}
-
-function buildRefinePrompt({
-  slackText,
-  slackContext,
-  draft,
-  meta,
-}: {
-  slackText: string;
-  slackContext: SlackContext | null;
-  draft: string;
-  meta: PromptMeta;
-}): string {
-  return `
-あなたは Slack チャンネルで返信するアシスタントです。
-返信フェーズ: ${meta.pass}/${meta.totalPasses}（改善）
-今回の目標完成度: ${meta.targetPercent}%
-
-このフェーズの目的:
-• ドラフトを、より正確で実用的な回答に改善する。
-• Web検索等を活用して、情報不足を補う。
-• 不足補完・誤り修正・曖昧表現の解消を優先する。
-• 良い部分は残し、必要な箇所だけを改善する。
-
-改善ルール:
-• ドラフトの主張が根拠薄い場合は、断定を弱めるか前提を明記する。
-• 回答は具体的な次アクションにつなげる。
-• ドラフトに「${INCOMPLETE_MARKER}」がある場合は、補完できたら必ず削除する。
-• ${meta.isFinal ? "最終回ではマーカーを残さない。必要なら前提を明記し、質問は最大1つまで。" : "補完後も不足が残る場合のみ、マーカーを残してよい。"}
-• 出力直前に、Slack表示が崩れる記法（\`* 〜 *\`、Markdownリンク、見出し\`#\`）を除去・修正する。
-
-${buildCommonPromptPolicies()}
-
-入力:
-${buildInputSection(slackText, slackContext, draft)}
-  `.trim();
-}
-
-function stripIncompleteMarker(text: string): string {
-  let out = text || "";
-  out = out.replace(INCOMPLETE_MARKER_PATTERN, "");
-  return out
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
 }
 
 function diagnoseFailure(err: ExecError) {
@@ -239,16 +261,23 @@ export async function respondMention({
   slackText,
   workdir,
   slackContext,
+  memory,
   onProgress,
 }: {
   slackText: string;
   workdir: string;
   slackContext: SlackContext | null;
+  memory?: MemoryContext | null;
   onProgress?: (payload: ProgressPayload) => void;
 }) {
   const refineConfig = getRefineConfig();
   const meta = buildMeta(1, refineConfig.totalPasses);
-  const prompt = buildMentionPrompt(slackText, slackContext, meta);
+  const prompt = buildMentionPrompt({
+    slackText,
+    slackContext,
+    memory: memory ?? null,
+    meta,
+  });
   try {
     const { stdout } = await runCodexExec({ prompt, cwd: workdir });
     let draftInternal = (stdout || "").trim();
@@ -263,14 +292,15 @@ export async function respondMention({
       totalPasses: refineConfig.totalPasses,
       pending: refineConfig.enabled && refineConfig.maxRefines > 0,
     });
+    let currentInternal = draftInternal;
+    let currentDisplay = draftDisplay;
     if (refineConfig.enabled) {
-      let currentInternal = draftInternal;
-      let currentDisplay = draftDisplay;
       for (let attempt = 0; attempt < refineConfig.maxRefines; attempt += 1) {
         const pass = attempt + 2;
         const refinePrompt = buildRefinePrompt({
           slackText,
           slackContext,
+          memory: memory ?? null,
           draft: currentInternal,
           meta: buildMeta(pass, refineConfig.totalPasses),
         });
@@ -305,12 +335,13 @@ export async function respondMention({
           break;
         }
       }
-      if (currentInternal !== draftInternal) {
-        return { ok: true, text: currentDisplay, refined: true };
-      }
     }
 
-    return { ok: true, text: draftDisplay, refined: false };
+    return {
+      ok: true,
+      text: currentDisplay,
+      refined: currentInternal !== draftInternal,
+    };
   } catch (e) {
     const hint = diagnoseFailure(e as ExecError);
     console.error("respondMention failed", {

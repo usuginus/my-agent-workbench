@@ -1,6 +1,13 @@
 import { WebClient } from "@slack/web-api";
 
-function slimMessages(messages, limit = 20) {
+type SlimMessage = {
+  user: string;
+  text: string;
+  ts: string;
+  thread_ts: string;
+};
+
+function slimMessages(messages: any[] | undefined, limit: number | null = 20): SlimMessage[] {
   const list = messages || [];
   const sliced = limit == null ? list : list.slice(0, limit);
   return sliced.map((m) => ({
@@ -11,14 +18,21 @@ function slimMessages(messages, limit = 20) {
   }));
 }
 
+function errorMessage(e: any): string {
+  return e?.data?.error || e?.message || "unknown_error";
+}
+
 export type SlackContext = {
   channel_id: string;
-  recent_messages?: Array<{
-    user: string;
-    text: string;
-    ts: string;
-    thread_ts: string;
-  }>;
+  channel_info?: {
+    id: string;
+    name?: string;
+    topic?: string;
+    purpose?: string;
+    is_private?: boolean;
+  };
+  channel_info_error?: string;
+  recent_messages?: SlimMessage[];
   recent_messages_error?: string;
   channel_members?: string[];
   channel_members_error?: string;
@@ -30,12 +44,7 @@ export type SlackContext = {
     title?: string;
   };
   request_user_error?: string;
-  thread_messages?: Array<{
-    user: string;
-    text: string;
-    ts: string;
-    thread_ts: string;
-  }>;
+  thread_messages?: SlimMessage[];
   thread_messages_error?: string;
 };
 
@@ -56,13 +65,27 @@ export async function buildSlackContext({
   const context: SlackContext = { channel_id: channelId };
 
   try {
+    const info = await client.conversations.info({ channel: channelId });
+    const channel: any = info.channel;
+    context.channel_info = {
+      id: channelId,
+      name: channel?.name,
+      topic: channel?.topic?.value || undefined,
+      purpose: channel?.purpose?.value || undefined,
+      is_private: channel?.is_private,
+    };
+  } catch (e) {
+    context.channel_info_error = errorMessage(e);
+  }
+
+  try {
     const history = await client.conversations.history({
       channel: channelId,
       limit: 20,
     });
-    context.recent_messages = slimMessages(history.messages, 20);
+    context.recent_messages = slimMessages(history.messages as any[], 20);
   } catch (e) {
-    context.recent_messages_error = e?.data?.error || e?.message;
+    context.recent_messages_error = errorMessage(e);
   }
 
   try {
@@ -72,7 +95,7 @@ export async function buildSlackContext({
     });
     context.channel_members = (members.members || []).slice(0, 50);
   } catch (e) {
-    context.channel_members_error = e?.data?.error || e?.message;
+    context.channel_members_error = errorMessage(e);
   }
 
   if (userId) {
@@ -87,14 +110,14 @@ export async function buildSlackContext({
         title: profile.title,
       };
     } catch (e) {
-      context.request_user_error = e?.data?.error || e?.message;
+      context.request_user_error = errorMessage(e);
     }
   }
 
   if (threadTs) {
     try {
-      const allReplies = [];
-      let cursor = undefined;
+      const allReplies: any[] = [];
+      let cursor: string | undefined = undefined;
       do {
         const replies = await client.conversations.replies({
           channel: channelId,
@@ -110,7 +133,7 @@ export async function buildSlackContext({
       } while (cursor);
       context.thread_messages = slimMessages(allReplies, null);
     } catch (e) {
-      context.thread_messages_error = e?.data?.error || e?.message;
+      context.thread_messages_error = errorMessage(e);
     }
   }
 

@@ -2,3 +2,5 @@
 .env
 dist
 node_modules
+# 長期記憶（ワークスペースの人・やり取りを含むためコミットしない）
+memory/

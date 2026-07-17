@@ -1,9 +1,13 @@
 import "dotenv/config";
 import { App } from "@slack/bolt";
-import { stripBotMention } from "../integrations/slack_formatters.js";
+import {
+  sanitizeForSlack,
+  stripBotMention,
+} from "../integrations/slack_formatters.js";
 import { planHangout, formatSearchConditions } from "../services/hangout.js";
 import { respondMention } from "../services/mention.js";
 import { buildSlackContext } from "../integrations/slack_api.js";
+import { loadMemoryContext, recordInteraction } from "../services/memory.js";
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -12,7 +16,8 @@ const app = new App({
   socketMode: true,
 });
 
-const WORKDIR = process.env.CODEX_WORKDIR || process.cwd();
+const WORKDIR =
+  process.env.PLANNER_REPO_DIR || process.env.CODEX_WORKDIR || process.cwd();
 
 app.command("/nomikai", async ({ command, ack, say }) => {
   await ack();
@@ -20,19 +25,40 @@ app.command("/nomikai", async ({ command, ack, say }) => {
   const cond = formatSearchConditions(command.text || "");
   await say(`🤔 <@${command.user_id}> 候補を考え中...\n${cond}`);
 
-  const slackContext = await buildSlackContext({
-    token: process.env.SLACK_BOT_TOKEN,
-    channelId: command.channel_id,
-    userId: command.user_id,
-  });
+  const [slackContext, memory] = await Promise.all([
+    buildSlackContext({
+      token: process.env.SLACK_BOT_TOKEN,
+      channelId: command.channel_id,
+      userId: command.user_id,
+    }),
+    loadMemoryContext({
+      channelId: command.channel_id,
+      userId: command.user_id,
+    }),
+  ]);
 
   const result = await planHangout({
     slackText: command.text || "",
-    workdir: process.env.PLANNER_REPO_DIR || process.cwd(),
+    workdir: WORKDIR,
     slackContext,
+    memory,
   });
 
   await say(result.text);
+
+  if (result.ok) {
+    recordInteraction(
+      {
+        kind: "nomikai",
+        channel_id: command.channel_id,
+        user_id: command.user_id,
+        question: command.text || "",
+        answer: result.text,
+        at: new Date().toISOString(),
+      },
+      slackContext,
+    );
+  }
 });
 
 app.event("app_mention", async ({ event, say, client }) => {
@@ -47,12 +73,15 @@ app.event("app_mention", async ({ event, say, client }) => {
     return;
   }
 
-  const slackContext = await buildSlackContext({
-    token: process.env.SLACK_BOT_TOKEN,
-    channelId: event.channel,
-    userId: event.user,
-    threadTs: event.thread_ts,
-  });
+  const [slackContext, memory] = await Promise.all([
+    buildSlackContext({
+      token: process.env.SLACK_BOT_TOKEN,
+      channelId: event.channel,
+      userId: event.user,
+      threadTs: event.thread_ts,
+    }),
+    loadMemoryContext({ channelId: event.channel, userId: event.user }),
+  ]);
 
   const threadTs = event.thread_ts || event.ts;
   const thinking = await say({
@@ -93,7 +122,7 @@ app.event("app_mention", async ({ event, say, client }) => {
   };
 
   const formatReply = (text: string, pending: boolean) => {
-    const body = stripLeadingSelfMention(text);
+    const body = sanitizeForSlack(stripLeadingSelfMention(text));
     const prefix = pending
       ? `<@${event.user}> 思考中... :loading:`
       : `<@${event.user}>`;
@@ -114,20 +143,31 @@ app.event("app_mention", async ({ event, say, client }) => {
 
   const result = await respondMention({
     slackText: cleaned,
-    workdir: process.env.PLANNER_REPO_DIR || process.cwd(),
+    workdir: WORKDIR,
     slackContext,
+    memory,
     onProgress: async ({ stage, text, pending }) => {
-      if (stage === "draft") {
-        await updateMessage(text, pending);
-      }
-      if (stage === "refined") {
+      if (stage === "draft" || stage === "refined") {
         await updateMessage(text, pending);
       }
     },
   });
 
-  if (!result.ok) {
-    await updateMessage(result.text, false);
+  // refine が途中で失敗しても「思考中...」プレフィックスを残さないよう、最終状態で必ず上書きする
+  await updateMessage(result.text, false);
+
+  if (result.ok) {
+    recordInteraction(
+      {
+        kind: "mention",
+        channel_id: event.channel,
+        user_id: event.user,
+        question: cleaned,
+        answer: result.text,
+        at: new Date().toISOString(),
+      },
+      slackContext,
+    );
   }
 });
 
