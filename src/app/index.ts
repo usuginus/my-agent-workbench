@@ -5,6 +5,7 @@ import { stripBotMention } from "../integrations/slack_formatters.js";
 import {
   buildMentionBlocks,
   buildNomikaiBlocks,
+  buildResearchCompletedBlocks,
   buildResearchFailedBlocks,
   buildResearchReportPages,
   buildResearchStatusBlocks,
@@ -158,6 +159,139 @@ app.action(NOMIKAI_CLOSE_ACTION, async ({ ack, body, client }) => {
 
 // ---- メンション: 通常応答 / 調査モード ----
 
+// 調査ジョブの起動。statusTs を渡すと既存メッセージ（例: 「思考中...」）を
+// ステータスカードに転用し、なければスレッドに新規投稿する
+async function launchResearch({
+  client,
+  say,
+  channelId,
+  threadTs,
+  contextThreadTs,
+  userId,
+  requestText,
+  topic,
+  statusTs: existingStatusTs,
+}: {
+  client: any;
+  say: any;
+  channelId: string;
+  threadTs: string;
+  contextThreadTs?: string;
+  userId: string;
+  requestText: string;
+  topic: string;
+  statusTs?: string;
+}) {
+  let statusTs = existingStatusTs;
+  const initial = buildResearchStatusBlocks({
+    userId,
+    topic,
+    phase: "queued",
+    position: 1,
+  });
+  if (statusTs) {
+    await sendSlackMessage("research_status", initial, (p) =>
+      client.chat.update({ channel: channelId, ts: statusTs, ...p }),
+    );
+  } else {
+    const posted = await say({ ...initial, thread_ts: threadTs });
+    statusTs = posted?.ts;
+  }
+
+  const updateStatus = async (payload: MessagePayload) => {
+    if (!statusTs) return;
+    await sendSlackMessage("research_status", payload, (p) =>
+      client.chat.update({ channel: channelId, ts: statusTs, ...p }),
+    );
+  };
+
+  void (async () => {
+    try {
+      const [slackContext, memory] = await Promise.all([
+        buildSlackContext({
+          token: process.env.SLACK_BOT_TOKEN,
+          channelId,
+          userId,
+          threadTs: contextThreadTs,
+        }),
+        loadMemoryContext({ channelId, userId }),
+      ]);
+
+      const result = await runResearch({
+        slackText: requestText,
+        workdir: WORKDIR,
+        slackContext,
+        memory,
+        onProgress: async (progress) => {
+          await updateStatus(
+            buildResearchStatusBlocks({
+              userId,
+              topic,
+              phase: progress.phase,
+              position: progress.phase === "queued" ? progress.position : undefined,
+              plan: progress.phase === "researching" ? progress.plan : undefined,
+            }),
+          );
+        },
+      });
+
+      if (result.ok) {
+        // chat.update はサイズ上限が厳しいので、カードは小さな完了表示に留め、
+        // レポート本文は postMessage でページ分割してスレッドに投稿する
+        const pages = buildResearchReportPages({
+          topic,
+          report: result.text,
+        });
+        await updateStatus(
+          buildResearchCompletedBlocks({
+            userId,
+            topic,
+            elapsedMs: result.elapsedMs,
+            pageCount: pages.length,
+          }),
+        );
+        for (const page of pages) {
+          await sendSlackMessage("research_report_page", page, (p) =>
+            client.chat.postMessage({
+              channel: channelId,
+              thread_ts: threadTs,
+              ...p,
+            }),
+          );
+        }
+        recordInteraction(
+          {
+            kind: "research",
+            channel_id: channelId,
+            user_id: userId,
+            question: requestText,
+            answer: result.text,
+            at: new Date().toISOString(),
+          },
+          slackContext,
+        );
+      } else {
+        await updateStatus(
+          buildResearchFailedBlocks({
+            userId,
+            topic,
+            reason: result.text,
+          }),
+        );
+      }
+    } catch (e) {
+      console.error("research job crashed", (e as Error)?.message);
+      await updateStatus(
+        buildResearchFailedBlocks({
+          userId,
+          topic,
+          reason: "内部エラーで調査ジョブが落ちちゃった。ログを見てみて。",
+        }),
+      ).catch(() => {});
+    }
+  })();
+}
+
 app.event("app_mention", async ({ event, say, client }) => {
   if (event.bot_id) return;
 
@@ -172,103 +306,19 @@ app.event("app_mention", async ({ event, say, client }) => {
 
   const threadTs = event.thread_ts || event.ts;
 
-  // 「調べて」系は同期応答に収まらないので、即 ACK して非同期の調査ジョブへ
+  // 明示的な「調べて」系は即・調査モードへ（速いパス）。
+  // トリガー語がなくても、通常応答の1パス目が自己判断でエスカレーションする（下記）
   if (isResearchRequest(cleaned)) {
-    const statusPayload = buildResearchStatusBlocks({
+    await launchResearch({
+      client,
+      say,
+      channelId: event.channel,
+      threadTs,
+      contextThreadTs: event.thread_ts,
       userId: event.user,
+      requestText: cleaned,
       topic: cleaned,
-      phase: "queued",
-      position: 1,
     });
-    const statusMsg = await say({ ...statusPayload, thread_ts: threadTs });
-    const statusTs = statusMsg?.ts;
-
-    const updateStatus = async (payload: MessagePayload) => {
-      if (!statusTs) return;
-      await sendSlackMessage("research_status", payload, (p) =>
-        client.chat.update({ channel: event.channel, ts: statusTs, ...p }),
-      );
-    };
-
-    void (async () => {
-      try {
-        const [slackContext, memory] = await Promise.all([
-          buildSlackContext({
-            token: process.env.SLACK_BOT_TOKEN,
-            channelId: event.channel,
-            userId: event.user,
-            threadTs: event.thread_ts,
-          }),
-          loadMemoryContext({ channelId: event.channel, userId: event.user }),
-        ]);
-
-        const result = await runResearch({
-          slackText: cleaned,
-          workdir: WORKDIR,
-          slackContext,
-          memory,
-          onProgress: async (progress) => {
-            await updateStatus(
-              buildResearchStatusBlocks({
-                userId: event.user,
-                topic: cleaned,
-                phase: progress.phase,
-                position: progress.phase === "queued" ? progress.position : undefined,
-                plan: progress.phase === "researching" ? progress.plan : undefined,
-              }),
-            );
-          },
-        });
-
-        if (result.ok) {
-          // 長いレポートはページ分割し、1通目はカード更新・以降はスレッドに続き投稿
-          const pages = buildResearchReportPages({
-            userId: event.user,
-            topic: cleaned,
-            report: result.text,
-            elapsedMs: result.elapsedMs,
-          });
-          await updateStatus(pages[0]);
-          for (const page of pages.slice(1)) {
-            await sendSlackMessage("research_report_page", page, (p) =>
-              client.chat.postMessage({
-                channel: event.channel,
-                thread_ts: threadTs,
-                ...p,
-              }),
-            );
-          }
-          recordInteraction(
-            {
-              kind: "research",
-              channel_id: event.channel,
-              user_id: event.user,
-              question: cleaned,
-              answer: result.text,
-              at: new Date().toISOString(),
-            },
-            slackContext,
-          );
-        } else {
-          await updateStatus(
-            buildResearchFailedBlocks({
-              userId: event.user,
-              topic: cleaned,
-              reason: result.text,
-            }),
-          );
-        }
-      } catch (e) {
-        console.error("research job crashed", (e as Error)?.message);
-        await updateStatus(
-          buildResearchFailedBlocks({
-            userId: event.user,
-            topic: cleaned,
-            reason: "内部エラーで調査ジョブが落ちちゃった。ログを見てみて。",
-          }),
-        ).catch(() => {});
-      }
-    })();
     return;
   }
 
@@ -346,6 +396,23 @@ app.event("app_mention", async ({ event, say, client }) => {
       await updateMessage(text, { pending, pass, totalPasses });
     },
   });
+
+  // 1パス目が「本格調査が必要」と判断したら、「思考中...」メッセージを
+  // ステータスカードに転用して調査モードへ切り替える
+  if (result.ok && result.escalateToResearch) {
+    await launchResearch({
+      client,
+      say,
+      channelId: event.channel,
+      threadTs,
+      contextThreadTs: event.thread_ts,
+      userId: event.user,
+      requestText: cleaned,
+      topic: result.escalateToResearch,
+      statusTs: thinkingTs,
+    });
+    return;
+  }
 
   // refine が途中で失敗しても「思考中...」表示を残さないよう、最終状態で必ず上書きする
   await updateMessage(result.text);

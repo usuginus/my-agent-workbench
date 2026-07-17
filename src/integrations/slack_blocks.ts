@@ -1,17 +1,41 @@
 import { sanitizeForSlack } from "./slack_formatters.js";
 import { type Poll } from "../services/polls.js";
 
-// Slack Block Kit の制約: section の mrkdwn は 3000 文字、blocks は 50 個まで。
-// メッセージ全体にも上限があり、超えると msg_too_long で更新ごと失敗する
+// Slack のサイズ制約:
+// ・section の mrkdwn は 3000 文字、blocks は 50 個まで
+// ・chat.update の text は 4,000「文字」だが実測ではバイト換算で効く
+//   （日本語 2,001 文字 ≒ 6KB で msg_too_long になった）
+// ・blocks 本文も 13,000 文字前後で msg_blocks_too_long の実測報告あり
+// よって文字数ではなくバイト数で予算管理する
 const SECTION_LIMIT = 2900;
 const MAX_SECTIONS = 40;
-const MAX_TOTAL_CHARS = 24_000;
-const FALLBACK_LIMIT = 2_000;
+const MESSAGE_BYTE_BUDGET = 12_000;
+const FALLBACK_CHAR_LIMIT = 2_000;
+const FALLBACK_BYTE_LIMIT = 3_000;
 
-// 通知・プッシュ用の fallback text。全文を入れると msg_too_long になるので必ず切り詰める
+const utf8 = new TextEncoder();
+
+function byteLength(text: string): number {
+  return utf8.encode(text || "").length;
+}
+
+function truncateBytes(text: string, maxBytes: number): string {
+  let out = text || "";
+  while (out && byteLength(out) > maxBytes) {
+    out = out.slice(0, Math.max(0, Math.floor(out.length * 0.9) - 1));
+  }
+  return out;
+}
+
+// 通知・プッシュ用の fallback text。chat.update の text 上限（4,000 ≒バイト）を
+// 確実に下回るよう、文字数とバイト数の両方で切り詰める
 export function fallbackText(text: string): string {
-  const t = (text || "").trim();
-  return t.length > FALLBACK_LIMIT ? `${t.slice(0, FALLBACK_LIMIT)}…` : t;
+  const original = (text || "").trim();
+  const truncated = truncateBytes(
+    original.slice(0, FALLBACK_CHAR_LIMIT),
+    FALLBACK_BYTE_LIMIT,
+  );
+  return truncated.length < original.length ? `${truncated}…` : truncated;
 }
 
 // 単一 section に直接埋め込む LLM 出力用。3000 字制限と全体上限の両方から身を守る
@@ -46,7 +70,11 @@ export async function sendSlackMessage(
       blockCount: payload.blocks?.length ?? 0,
       blocksJsonChars: JSON.stringify(payload.blocks ?? []).length,
     });
-    if (code === "msg_too_long" || code === "invalid_blocks") {
+    if (
+      code === "msg_too_long" ||
+      code === "msg_blocks_too_long" ||
+      code === "invalid_blocks"
+    ) {
       await send({ text: fallbackText(payload.text || "…"), blocks: [] });
       return;
     }
@@ -139,47 +167,49 @@ function mrkdwnChunks(rawText: string): string[] {
  */
 export function mrkdwnSections(rawText: string): Block[] {
   const limited: string[] = [];
-  let total = 0;
+  let totalBytes = 0;
   for (const chunk of mrkdwnChunks(rawText).slice(0, MAX_SECTIONS)) {
-    if (total + chunk.length > MAX_TOTAL_CHARS) {
+    const bytes = byteLength(chunk);
+    if (totalBytes + bytes > MESSAGE_BYTE_BUDGET) {
       limited.push("…（長すぎたため以降は省略）");
       break;
     }
     limited.push(chunk);
-    total += chunk.length;
+    totalBytes += bytes;
   }
   return limited.map(section);
 }
 
-// 複数メッセージ分割時の1ページあたりの予算
-const PAGE_CHAR_BUDGET = 20_000;
+// 複数メッセージ分割時の1ページあたりの上限
 const PAGE_MAX_SECTIONS = 35;
-const MAX_PAGES = 5;
+const MAX_PAGES = 10;
 
 /**
  * 長文 mrkdwn を複数メッセージ（ページ）に分割する。
- * 各ページは Slack の1メッセージに安全に収まる section 列。
+ * 各ページの本文はバイト予算内に収め、Slack の1メッセージとして安全に送れるようにする。
  */
 export function paginateMrkdwn(rawText: string): Block[][] {
   const chunks = mrkdwnChunks(rawText);
   const pages: Block[][] = [];
   let current: Block[] = [];
-  let total = 0;
+  let totalBytes = 0;
   for (const chunk of chunks) {
+    const bytes = byteLength(chunk);
     if (
       current.length > 0 &&
-      (total + chunk.length > PAGE_CHAR_BUDGET || current.length >= PAGE_MAX_SECTIONS)
+      (totalBytes + bytes > MESSAGE_BYTE_BUDGET ||
+        current.length >= PAGE_MAX_SECTIONS)
     ) {
       pages.push(current);
       current = [];
-      total = 0;
+      totalBytes = 0;
     }
     if (pages.length >= MAX_PAGES) {
       pages[pages.length - 1].push(section("…（長すぎたため以降は省略）"));
       return pages;
     }
     current.push(section(chunk));
-    total += chunk.length;
+    totalBytes += bytes;
   }
   if (current.length) pages.push(current);
   return pages.length ? pages : [[section("（本文なし）")]];
@@ -268,42 +298,56 @@ export function buildResearchStatusBlocks({
 }
 
 /**
- * 調査レポートをメッセージ列に組み立てる。
- * 1通目はステータスカードの置き換え用、2通目以降はスレッドへの続き投稿用。
+ * 調査完了カード。ステータスカードの置き換え（chat.update）用。
+ * chat.update は text ≒4,000 バイト制限が厳しいため、レポート本文はここに載せず
+ * buildResearchReportPages で別メッセージとして投稿する。
  */
-export function buildResearchReportPages({
+export function buildResearchCompletedBlocks({
   userId,
   topic,
-  report,
   elapsedMs,
+  pageCount,
 }: {
   userId: string;
   topic: string;
-  report: string;
   elapsedMs: number;
+  pageCount: number;
+}): MessagePayload {
+  return {
+    text: fallbackText(`✅ <@${userId}> 調査完了（⏱ ${formatElapsed(elapsedMs)}）`),
+    blocks: [
+      context(`✅ <@${userId}> 調査完了（⏱ ${formatElapsed(elapsedMs)}）`),
+      section(topicQuote(topic)),
+      context(
+        pageCount > 1
+          ? `📄 レポート ${pageCount} 通をこのスレッドに投稿したよ`
+          : "📄 レポートをこのスレッドに投稿したよ",
+      ),
+    ],
+  };
+}
+
+/**
+ * 調査レポート本文をスレッド投稿用のメッセージ列に組み立てる。
+ * すべて chat.postMessage で送る前提（chat.update より上限が緩い）。
+ */
+export function buildResearchReportPages({
+  topic,
+  report,
+}: {
+  topic: string;
+  report: string;
 }): MessagePayload[] {
   const pages = paginateMrkdwn(report);
   const total = pages.length;
   return pages.map((sections, i) => {
-    if (i === 0) {
-      const blocks = [
-        context(`✅ <@${userId}> 調査完了（⏱ ${formatElapsed(elapsedMs)}）`),
-        section(topicQuote(topic)),
-        divider(),
-        ...sections,
-      ];
-      if (total > 1) {
-        blocks.push(context(`📄 1/${total} — つづきはこのスレッドに投稿するよ`));
-      }
-      return {
-        text: fallbackText(`✅ <@${userId}> 調査完了\n${sanitizeForSlack(report)}`),
-        blocks,
-      };
-    }
-    return {
-      text: `📄 調査レポート つづき（${i + 1}/${total}）`,
-      blocks: [context(`📄 つづき（${i + 1}/${total}）`), ...sections],
-    };
+    const header =
+      total > 1 ? `📄 調査レポート（${i + 1}/${total}）` : "📄 調査レポート";
+    const blocks: Block[] =
+      i === 0
+        ? [context(header), section(topicQuote(topic)), divider(), ...sections]
+        : [context(header), ...sections];
+    return { text: fallbackText(header), blocks };
   });
 }
 

@@ -16,9 +16,14 @@ const DEFAULT_MAX_CONCURRENT = 2;
 
 const RESEARCH_TRIGGER = /調べ(て|といて|てほしい|てくれ|ておいて)|調査して|リサーチ|深掘り|deep\s*dive/i;
 
+// 明示的なトリガー語による速いパス。これに引っかからなくても、
+// メンション応答の1パス目が自己判断でエスカレーションできる（mention.ts 参照）
 export function isResearchRequest(text: string): boolean {
   return RESEARCH_TRIGGER.test(text || "");
 }
+
+// メンション応答の1パス目が「本格調査が必要」と判断したときに出力するマーカー
+export const RESEARCH_ESCALATION_MARKER = "RESEARCH_MODE:";
 
 function getResearchTimeoutMs(): number {
   const parsed = Number.parseInt(process.env.CODEX_RESEARCH_TIMEOUT_MS || "", 10);

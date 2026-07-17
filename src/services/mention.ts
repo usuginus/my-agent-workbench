@@ -6,6 +6,7 @@ import {
 import { type SlackContext } from "../integrations/slack_api.js";
 import { type MemoryContext } from "./memory.js";
 import { nowJst, SLACK_MRKDWN_RULES } from "./prompt_rules.js";
+import { RESEARCH_ESCALATION_MARKER } from "./research.js";
 
 const INCOMPLETE_MARKER = "※暫定回答";
 const INCOMPLETE_SUFFIX = "（追記予定）";
@@ -148,6 +149,20 @@ function buildMentionPrompt({
 ・わかる範囲で結論を出す。完璧さは後続の改善フェーズに任せてよい。
 ${meta.isFinal ? "・最終回なので不完全マーカーは付けず、可能な限り完成させる。" : `・回答が未完成なら末尾に「${INCOMPLETE_MARKER}${INCOMPLETE_SUFFIX}」を必ず付ける。`}
 
+# 調査モードへのエスカレーション判断（回答を書く前に必ず考える）
+依頼が本格的な調査を要すると判断したら、回答本文を一切書かず、次の1行だけを出力する:
+${RESEARCH_ESCALATION_MARKER} <調査テーマを1行で>
+
+エスカレーションすべき例:
+・複数ソースの照合や広い最新情報の収集が必要（技術選定の比較、市場動向、網羅的な調査依頼）
+・「徹底的に」「詳しく」「まとめて」など、深さ・網羅性を求められている
+・短い回答を返しても、どうせ追加で深掘りを求められそうな重い問い
+
+エスカレーションしない例:
+・雑談、感想、軽い質問、記憶や会話の文脈だけで答えられるもの
+・1〜3件の検索でサクッと答えられる単発の事実確認
+・迷ったら通常回答を選ぶ（エスカレーションは確信がある時だけ）。
+
 ${buildCommonPromptPolicies()}
 
 # 入力
@@ -186,6 +201,18 @@ ${buildCommonPromptPolicies()}
 # 入力
 ${buildContextSection({ slackText, slackContext, memory, draft })}
   `.trim();
+}
+
+// 1パス目の出力がエスカレーションマーカーなら調査テーマを取り出す。
+// 出力全体がマーカーで始まる時だけ採用し、本文中の引用等での誤発動を防ぐ
+function parseResearchEscalation(text: string): string | null {
+  const trimmed = (text || "").trim();
+  if (!trimmed.startsWith(RESEARCH_ESCALATION_MARKER)) return null;
+  const topic = trimmed
+    .slice(RESEARCH_ESCALATION_MARKER.length)
+    .split("\n")[0]
+    .trim();
+  return topic ? topic.slice(0, 200) : null;
 }
 
 function stripIncompleteMarker(text: string): string {
@@ -238,6 +265,10 @@ export async function respondMention({
     let draftInternal = (stdout || "").trim();
     if (!draftInternal) {
       throw new Error("Empty response from codex.");
+    }
+    const escalationTopic = parseResearchEscalation(draftInternal);
+    if (escalationTopic) {
+      return { ok: true, text: "", escalateToResearch: escalationTopic };
     }
     const draftDisplay = stripIncompleteMarker(draftInternal);
     await onProgress?.({
