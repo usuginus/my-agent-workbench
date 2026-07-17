@@ -5,7 +5,11 @@ import {
   type ExecError,
 } from "../integrations/codex_client.js";
 import { sanitizeForSlack } from "../integrations/slack_formatters.js";
-import { mrkdwnSections, type MessagePayload } from "../integrations/slack_blocks.js";
+import {
+  fallbackText,
+  mrkdwnSections,
+  type MessagePayload,
+} from "../integrations/slack_blocks.js";
 import { loadMemoryContext } from "./memory.js";
 import { nowJst, SLACK_MRKDWN_RULES } from "./prompt_rules.js";
 
@@ -116,7 +120,7 @@ export async function postNewsDigest(
     }
 
     const payload: MessagePayload = {
-      text: sanitizeForSlack(text),
+      text: fallbackText(sanitizeForSlack(text)),
       blocks: [
         {
           type: "context",

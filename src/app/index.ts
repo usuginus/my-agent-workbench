@@ -6,7 +6,7 @@ import {
   buildMentionBlocks,
   buildNomikaiBlocks,
   buildResearchFailedBlocks,
-  buildResearchReportBlocks,
+  buildResearchReportPages,
   buildResearchStatusBlocks,
   NOMIKAI_CLOSE_ACTION,
   NOMIKAI_VOTE_ACTION,
@@ -215,14 +215,21 @@ app.event("app_mention", async ({ event, say, client }) => {
         });
 
         if (result.ok) {
-          await updateStatus(
-            buildResearchReportBlocks({
-              userId: event.user,
-              topic: cleaned,
-              report: result.text,
-              elapsedMs: result.elapsedMs,
-            }),
-          );
+          // 長いレポートはページ分割し、1通目はカード更新・以降はスレッドに続き投稿
+          const pages = buildResearchReportPages({
+            userId: event.user,
+            topic: cleaned,
+            report: result.text,
+            elapsedMs: result.elapsedMs,
+          });
+          await updateStatus(pages[0]);
+          for (const page of pages.slice(1)) {
+            await client.chat.postMessage({
+              channel: event.channel,
+              thread_ts: threadTs,
+              ...page,
+            });
+          }
           recordInteraction(
             {
               kind: "research",

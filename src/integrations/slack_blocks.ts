@@ -1,9 +1,18 @@
 import { sanitizeForSlack } from "./slack_formatters.js";
 import { type Poll } from "../services/polls.js";
 
-// Slack Block Kit の制約: section の mrkdwn は 3000 文字、blocks は 50 個まで
+// Slack Block Kit の制約: section の mrkdwn は 3000 文字、blocks は 50 個まで。
+// メッセージ全体にも上限があり、超えると msg_too_long で更新ごと失敗する
 const SECTION_LIMIT = 2900;
 const MAX_SECTIONS = 40;
+const MAX_TOTAL_CHARS = 24_000;
+const FALLBACK_LIMIT = 2_000;
+
+// 通知・プッシュ用の fallback text。全文を入れると msg_too_long になるので必ず切り詰める
+export function fallbackText(text: string): string {
+  const t = (text || "").trim();
+  return t.length > FALLBACK_LIMIT ? `${t.slice(0, FALLBACK_LIMIT)}…` : t;
+}
 
 export type Block = Record<string, any>;
 
@@ -39,10 +48,10 @@ function splitFenced(fenced: string): string[] {
 }
 
 /**
- * mrkdwn テキストを section block の列へ変換する。
- * 段落単位で 3000 文字制限に収め、コードブロックはフェンスを保ったまま分割する。
+ * mrkdwn テキストを 3000 文字制限に収まるチャンク列へ変換する。
+ * 段落単位で詰め、コードブロックはフェンスを保ったまま分割する。
  */
-export function mrkdwnSections(rawText: string): Block[] {
+function mrkdwnChunks(rawText: string): string[] {
   const sanitized = sanitizeForSlack(rawText);
   const paragraphs: string[] = [];
   for (const segment of sanitized.split(/(```[\s\S]*?```)/g)) {
@@ -88,8 +97,59 @@ export function mrkdwnSections(rawText: string): Block[] {
     }
   }
   flush();
+  return chunks;
+}
 
-  return chunks.slice(0, MAX_SECTIONS).map(section);
+/**
+ * 1メッセージに収める前提の section block 列。上限を超えた分は省略する。
+ * 省略したくない長文（調査レポート等）は paginateMrkdwn で複数メッセージに分ける。
+ */
+export function mrkdwnSections(rawText: string): Block[] {
+  const limited: string[] = [];
+  let total = 0;
+  for (const chunk of mrkdwnChunks(rawText).slice(0, MAX_SECTIONS)) {
+    if (total + chunk.length > MAX_TOTAL_CHARS) {
+      limited.push("…（長すぎたため以降は省略）");
+      break;
+    }
+    limited.push(chunk);
+    total += chunk.length;
+  }
+  return limited.map(section);
+}
+
+// 複数メッセージ分割時の1ページあたりの予算
+const PAGE_CHAR_BUDGET = 20_000;
+const PAGE_MAX_SECTIONS = 35;
+const MAX_PAGES = 5;
+
+/**
+ * 長文 mrkdwn を複数メッセージ（ページ）に分割する。
+ * 各ページは Slack の1メッセージに安全に収まる section 列。
+ */
+export function paginateMrkdwn(rawText: string): Block[][] {
+  const chunks = mrkdwnChunks(rawText);
+  const pages: Block[][] = [];
+  let current: Block[] = [];
+  let total = 0;
+  for (const chunk of chunks) {
+    if (
+      current.length > 0 &&
+      (total + chunk.length > PAGE_CHAR_BUDGET || current.length >= PAGE_MAX_SECTIONS)
+    ) {
+      pages.push(current);
+      current = [];
+      total = 0;
+    }
+    if (pages.length >= MAX_PAGES) {
+      pages[pages.length - 1].push(section("…（長すぎたため以降は省略）"));
+      return pages;
+    }
+    current.push(section(chunk));
+    total += chunk.length;
+  }
+  if (current.length) pages.push(current);
+  return pages.length ? pages : [[section("（本文なし）")]];
 }
 
 // ---- メンション応答 ----
@@ -114,7 +174,7 @@ export function buildMentionBlocks({
         ? `<@${userId}> :loading: 思考中…`
         : `💬 <@${userId}>`;
   return {
-    text: `<@${userId}>\n${sanitizeForSlack(body)}`,
+    text: fallbackText(`<@${userId}>\n${sanitizeForSlack(body)}`),
     blocks: [context(status), ...mrkdwnSections(body)],
   };
 }
@@ -173,7 +233,11 @@ export function buildResearchStatusBlocks({
   return { text: `🔍 <@${userId}> 調査中: ${topic.slice(0, 100)}`, blocks };
 }
 
-export function buildResearchReportBlocks({
+/**
+ * 調査レポートをメッセージ列に組み立てる。
+ * 1通目はステータスカードの置き換え用、2通目以降はスレッドへの続き投稿用。
+ */
+export function buildResearchReportPages({
   userId,
   topic,
   report,
@@ -183,16 +247,30 @@ export function buildResearchReportBlocks({
   topic: string;
   report: string;
   elapsedMs: number;
-}): MessagePayload {
-  return {
-    text: `✅ <@${userId}> 調査完了\n${sanitizeForSlack(report)}`,
-    blocks: [
-      context(`✅ <@${userId}> 調査完了（⏱ ${formatElapsed(elapsedMs)}）`),
-      section(topicQuote(topic)),
-      divider(),
-      ...mrkdwnSections(report),
-    ],
-  };
+}): MessagePayload[] {
+  const pages = paginateMrkdwn(report);
+  const total = pages.length;
+  return pages.map((sections, i) => {
+    if (i === 0) {
+      const blocks = [
+        context(`✅ <@${userId}> 調査完了（⏱ ${formatElapsed(elapsedMs)}）`),
+        section(topicQuote(topic)),
+        divider(),
+        ...sections,
+      ];
+      if (total > 1) {
+        blocks.push(context(`📄 1/${total} — つづきはこのスレッドに投稿するよ`));
+      }
+      return {
+        text: fallbackText(`✅ <@${userId}> 調査完了\n${sanitizeForSlack(report)}`),
+        blocks,
+      };
+    }
+    return {
+      text: `📄 調査レポート つづき（${i + 1}/${total}）`,
+      blocks: [context(`📄 つづき（${i + 1}/${total}）`), ...sections],
+    };
+  });
 }
 
 export function buildResearchFailedBlocks({
@@ -205,7 +283,7 @@ export function buildResearchFailedBlocks({
   reason: string;
 }): MessagePayload {
   return {
-    text: `⚠️ <@${userId}> 調査に失敗: ${reason}`,
+    text: fallbackText(`⚠️ <@${userId}> 調査に失敗: ${reason}`),
     blocks: [
       context(`⚠️ <@${userId}> ごめん、調査に失敗しちゃった`),
       section(topicQuote(topic)),
