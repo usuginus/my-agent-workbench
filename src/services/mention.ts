@@ -1,6 +1,11 @@
-import { runCodexExec, type ExecError } from "../integrations/codex_client.js";
+import {
+  runCodexExec,
+  diagnoseCodexFailure,
+  type ExecError,
+} from "../integrations/codex_client.js";
 import { type SlackContext } from "../integrations/slack_api.js";
 import { type MemoryContext } from "./memory.js";
+import { nowJst, SLACK_MRKDWN_RULES } from "./prompt_rules.js";
 
 const INCOMPLETE_MARKER = "※暫定回答";
 const INCOMPLETE_SUFFIX = "（追記予定）";
@@ -46,18 +51,6 @@ function buildMeta(pass: number, totalPasses: number): PromptMeta {
     targetPercent: getTargetCompleteness(pass, totalPasses),
     isFinal: pass >= totalPasses,
   };
-}
-
-function nowJst(): string {
-  return new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date());
 }
 
 function buildContextSection({
@@ -125,27 +118,7 @@ function buildCommonPromptPolicies(): string {
 ・情報不足で答えようがない時だけ、質問を1つだけ返す。
 ・内部手順・思考過程・ツール実行ログは書かない。自分を AI と名乗らない。
 
-# Slack mrkdwn ルール（重要: Slack は GitHub Markdown を表示できない）
-使ってよい記法:
-・太字は *太字*（アスタリスク1個、内側に空白を入れない、前後に空白を置く）
-・コードは \`inline\` と \`\`\`ブロック\`\`\`
-・リンクは <https://example.com|表示名> 形式（生URLも可）
-・箇条書きは「・」。インデントで階層を表してよい。
-・適度に空行を入れ、長い1段落を避ける。
-
-禁止（Slack で崩れる）:
-・**太字** や __太字__（アスタリスク2個は使えない）
-・[表示名](URL) 形式の Markdown リンク
-・# 見出し、表、HTMLタグ
-・<!here> <!channel> <!everyone>（明示的に依頼された時のみ）
-
-良い例:
-これ、 *結論から言うと* 明日までに終わるよ
-・手順は <https://example.com|このページ> の通り
-
-悪い例（絶対に出力しない）:
-**結論**: 明日までに終わります
-- 手順は [このページ](https://example.com) の通り
+${SLACK_MRKDWN_RULES}
 
 # 出力
 ・Slack に投稿する本文のみ。前置き・自己紹介・メタ説明・JSON は出力しない。
@@ -239,24 +212,6 @@ function getRefineConfig() {
   return { enabled, maxRefines, totalPasses };
 }
 
-function diagnoseFailure(err: ExecError) {
-  const msg = `${err?.message ?? ""}\n${err?.stderr ?? ""}`.toLowerCase();
-  if (msg.includes("enoent") || msg.includes("spawn codex")) {
-    return "Codex CLI not found. Make sure `codex` is installed and on PATH.";
-  }
-  if (
-    msg.includes("login") ||
-    msg.includes("not logged in") ||
-    msg.includes("auth")
-  ) {
-    return "Codex CLI authentication required. Run `codex login` and try again.";
-  }
-  if (msg.includes("timed out")) {
-    return "Codex timed out. Shorten the request or increase the timeout.";
-  }
-  return "Codex execution failed. Check server stderr for details.";
-}
-
 export async function respondMention({
   slackText,
   workdir,
@@ -343,7 +298,7 @@ export async function respondMention({
       refined: currentInternal !== draftInternal,
     };
   } catch (e) {
-    const hint = diagnoseFailure(e as ExecError);
+    const hint = diagnoseCodexFailure(e as ExecError);
     console.error("respondMention failed", {
       error: (e as ExecError)?.message,
       stderr: (e as ExecError)?.stderr,

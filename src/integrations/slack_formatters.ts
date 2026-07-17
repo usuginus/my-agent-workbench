@@ -54,9 +54,21 @@ function convertProse(text: string): string {
  * Slack へ投稿するテキストは必ずこの関数を通す。
  */
 export function sanitizeForSlack(text: string): string {
-  const segments = (text || "").split(CODE_SEGMENT_PATTERN);
-  const converted = segments
-    .map((segment, index) => (index % 2 === 1 ? segment : convertProse(segment)))
-    .join("");
-  return converted.replace(/\n{3,}/g, "\n\n").trim();
+  const parts = (text || "")
+    .split(CODE_SEGMENT_PATTERN)
+    .map((segment, index) => (index % 2 === 1 ? segment : convertProse(segment)));
+
+  // inline code も太字と同じ単語境界ルールがあり、「`xxx`というのも」のように
+  // 文字が密着すると描画されない。コード側は触れず、前後の地の文に空白を補う
+  for (let i = 1; i < parts.length; i += 2) {
+    if (parts[i].startsWith("```")) continue;
+    if (/[\p{L}\p{N}]$/u.test(parts[i - 1] ?? "")) {
+      parts[i - 1] = `${parts[i - 1]} `;
+    }
+    if (/^[\p{L}\p{N}]/u.test(parts[i + 1] ?? "")) {
+      parts[i + 1] = ` ${parts[i + 1]}`;
+    }
+  }
+
+  return parts.join("").replace(/\n{3,}/g, "\n\n").trim();
 }

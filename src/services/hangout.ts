@@ -1,7 +1,25 @@
-import { runCodexExec, type ExecError } from "../integrations/codex_client.js";
+import {
+  runCodexExec,
+  diagnoseCodexFailure,
+  type ExecError,
+} from "../integrations/codex_client.js";
 import { sanitizeForSlack } from "../integrations/slack_formatters.js";
 import { type SlackContext } from "../integrations/slack_api.js";
 import { type MemoryContext } from "./memory.js";
+
+export type HangoutCandidate = {
+  name: string;
+  reason: string;
+  budget_yen: number;
+  walk_min: number;
+  vibe: string;
+  tabelog_url?: string;
+};
+
+export type HangoutPlan = {
+  candidates: HangoutCandidate[];
+  final_message?: string;
+};
 
 const JSON_SCHEMA = `{
   "candidates": [
@@ -37,6 +55,29 @@ ${JSON_SCHEMA}
 - Use the user's locale and context when possible. If unclear, assume Japan and typical local venues.
 - Write "reason" and "final_message" in Japanese.
 `.trim();
+}
+
+// Codex の出力は信用せず、Block Kit へ渡す前に型を固める
+function normalizePlan(raw: any): HangoutPlan {
+  const list = Array.isArray(raw?.candidates) ? raw.candidates : [];
+  const candidates: HangoutCandidate[] = list.slice(0, 5).map((c: any) => ({
+    name: String(c?.name || "名称不明"),
+    reason: String(c?.reason || ""),
+    budget_yen: Number(c?.budget_yen) || 0,
+    walk_min: Number(c?.walk_min) || 0,
+    vibe: String(c?.vibe || ""),
+    tabelog_url:
+      typeof c?.tabelog_url === "string" && c.tabelog_url.startsWith("http")
+        ? c.tabelog_url
+        : undefined,
+  }));
+  if (!candidates.length) {
+    throw new Error("No candidates in codex output.");
+  }
+  return {
+    candidates,
+    final_message: raw?.final_message ? String(raw.final_message) : undefined,
+  };
 }
 
 function tryParseJson(stdout: string) {
@@ -100,24 +141,6 @@ function formatHangoutMessage(plan: {
   return lines.join("\n");
 }
 
-function diagnoseFailure(err: ExecError) {
-  const msg = `${err?.message ?? ""}\n${err?.stderr ?? ""}`.toLowerCase();
-  if (msg.includes("enoent") || msg.includes("spawn codex")) {
-    return "Codex CLI not found. Make sure `codex` is installed and on PATH.";
-  }
-  if (
-    msg.includes("login") ||
-    msg.includes("not logged in") ||
-    msg.includes("auth")
-  ) {
-    return "Codex CLI authentication required. Run `codex login` and try again.";
-  }
-  if (msg.includes("timed out")) {
-    return "Codex timed out. Shorten the request or increase the timeout.";
-  }
-  return "Codex execution failed. Check server stderr for details.";
-}
-
 export async function planHangout({
   slackText,
   workdir,
@@ -133,17 +156,17 @@ export async function planHangout({
 
   try {
     const { stdout } = await runCodexExec({ prompt: prompt1, cwd: workdir });
-    const plan = tryParseJson(stdout);
-    return { ok: true, text: formatHangoutMessage(plan), raw: plan };
+    const plan = normalizePlan(tryParseJson(stdout));
+    return { ok: true as const, text: formatHangoutMessage(plan), plan };
   } catch (e1) {
     // Retry once with a stronger JSON-only instruction.
     const prompt2 = `${prompt1}\n\nIMPORTANT: Output JSON ONLY. Do not include any other text.`;
     try {
       const { stdout } = await runCodexExec({ prompt: prompt2, cwd: workdir });
-      const plan = tryParseJson(stdout);
-      return { ok: true, text: formatHangoutMessage(plan), raw: plan };
+      const plan = normalizePlan(tryParseJson(stdout));
+      return { ok: true as const, text: formatHangoutMessage(plan), plan };
     } catch (e2) {
-      const hint = diagnoseFailure(e2 as ExecError);
+      const hint = diagnoseCodexFailure(e2 as ExecError);
       console.error("planHangout failed", {
         error1: (e1 as ExecError)?.message,
         error2: (e2 as ExecError)?.message,

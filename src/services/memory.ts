@@ -65,7 +65,7 @@ export type MemoryContext = {
 };
 
 export type InteractionRecord = {
-  kind: "mention" | "nomikai";
+  kind: "mention" | "nomikai" | "research";
   channel_id: string;
   user_id?: string;
   question: string;
