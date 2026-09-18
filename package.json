@@ -7,7 +7,8 @@
     "start": "node dist/app/index.js",
     "dev": "node --loader ts-node/esm src/app/index.ts",
     "news:once": "node dist/app/post_news_once.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "chatter:once": "node dist/app/post_chatter_once.js",
+    "test": "npm run build && node --test dist/**/*.test.js"
   },
   "keywords": [],
   "author": "",
