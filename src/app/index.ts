@@ -21,6 +21,7 @@ import { buildSlackContext } from "../integrations/slack_api.js";
 import { loadMemoryContext, recordInteraction } from "../services/memory.js";
 import { getNewsConfig, postNewsDigest } from "../services/news.js";
 import { closePoll, createPoll, getPoll, pollKey, toggleVote } from "../services/polls.js";
+import { getChatterConfig, runChatterTick } from "../services/chatter.js";
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -455,5 +456,45 @@ if (newsConfig.channelId) {
   );
   console.log(
     `🗞 news digest scheduled: "${expr}" (Asia/Tokyo) -> ${newsConfig.channelId}`,
+  );
+}
+
+// ---- 雑談への自然な乱入（CHATTER_CHANNEL_ID 設定時のみ稼働） ----
+
+const chatterConfig = getChatterConfig();
+if (chatterConfig.channelId) {
+  let expr = chatterConfig.cron;
+  if (!cron.validate(expr)) {
+    console.warn(`invalid CHATTER_CRON "${expr}", falling back to every 30 minutes`);
+    expr = "*/30 * * * *";
+  }
+  let chatterRunning = false;
+  cron.schedule(
+    expr,
+    () => {
+      if (chatterRunning) {
+        if (chatterConfig.debug) console.log("💬 chatter tick skipped: still running");
+        return;
+      }
+      chatterRunning = true;
+      runChatterTick()
+        .then((result) => {
+          if (result.status === "posted") {
+            console.log("💬 ambient chatter posted");
+          } else if (result.status === "failed") {
+            console.warn(`💬 chatter tick failed: ${result.reason}`);
+          } else if (result.status === "skipped" && chatterConfig.debug) {
+            console.log(`💬 chatter tick skipped: ${result.reason}`);
+          }
+        })
+        .catch((e) => console.error("chatter tick crashed", (e as Error)?.message))
+        .finally(() => {
+          chatterRunning = false;
+        });
+    },
+    { timezone: "Asia/Tokyo" },
+  );
+  console.log(
+    `💬 ambient chatter scheduled: "${expr}" (Asia/Tokyo) -> ${chatterConfig.channelId}`,
   );
 }

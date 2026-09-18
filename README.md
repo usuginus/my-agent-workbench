@@ -1,6 +1,6 @@
 # codex-echo-in-slack
 
-Codex CLI を頭脳にした Slack ボット。メンション応答・非同期リサーチ・飲み会投票・夕方ニュース便・長期記憶を備える。
+Codex CLI を頭脳にした Slack ボット。メンション応答・非同期リサーチ・飲み会投票・自然な雑談・夕方ニュース便・長期記憶を備える。
 
 ## 機能
 
@@ -9,6 +9,7 @@ Codex CLI を頭脳にした Slack ボット。メンション応答・非同期
 | メンション応答 | `@bot 〜` | Block Kit カードで返信。多パス推敲の進捗を表示しながら磨き上げる |
 | 調査モード | `@bot 〜調べといて` など | 即 ACK → 裏でロング調査（プラン → Web 深掘り）→ 出典付きレポート |
 | 飲み会プランナー | `/nomikai [エリア 予算 人数 時間]` | 候補3件を投票カードで提示。🍺 ボタンで投票、締切で決定 |
+| 雑談への自然な乱入 | 30分ごとの抽選 | 直近の話題に「草」などの短文で不規則に混ざる。既定は週4〜6回 |
 | 夕方ニュース便 | cron（既定 17:30 JST） | 今日のニュース3本を雑談ノリで自動投稿 |
 | 長期記憶 | 自動 | 人・チャンネル・やり取りを永続化し、全プロンプトに注入 |
 
@@ -84,12 +85,23 @@ npm run dev
 | 変数 | 既定値 | 説明 |
 |------|--------|------|
 | `CODEX_MODEL` | (codex 側の既定) | 使用モデル（例: `gpt-5.2`） |
+| `CODEX_BIN` | `codex` | Codex CLI 実行ファイル。PATH上のCLIが壊れている場合は絶対パスを指定 |
 | `CODEX_REASONING_EFFORT` | (codex 側の既定) | `low` などの reasoning effort |
 | `CODEX_WEB_SEARCH` | 有効 | `0` で Web 検索を無効化 |
 | `CODEX_REFINE` | 有効 | `0` で多パス推敲を無効化 |
 | `CODEX_REFINE_MAX` | `4` | 推敲パスの最大回数 |
 | `CODEX_RESEARCH_TIMEOUT_MS` | `900000` | 調査モードの深掘りパスの上限時間（15分） |
 | `RESEARCH_MAX_CONCURRENT` | `2` | 調査ジョブの同時実行数（超過分は順番待ち） |
+| `CHATTER_CHANNEL_ID` | (無効) | 雑談へ自然に混ざる投稿先チャンネル ID（`C…`） |
+| `CHATTER_CRON` | `*/30 * * * *` | 会話を確認する間隔（Asia/Tokyo） |
+| `CHATTER_WEEKLY_TARGET` | `5` | 週の基準投稿数。実際の上限は毎週 ±1 して人間っぽく揺らす |
+| `CHATTER_ACTIVE_START_HOUR` | `9` | 雑談に混ざり始める時刻（JST） |
+| `CHATTER_ACTIVE_END_HOUR` | `24` | 雑談に混ざる最終時刻（JST、この時刻は含まない） |
+| `CHATTER_LOOKBACK_MIN` | `90` | 話題として見る直近メッセージの期間（分） |
+| `CHATTER_MIN_MESSAGES` | `2` | 抽選対象にするために必要な人間の投稿数 |
+| `CHATTER_COOLDOWN_MIN` | `360` | 自動投稿後の最低沈黙時間（分） |
+| `CHATTER_OPPORTUNITY_RATE` | `0.35` | 30分枠のうち会話があると見込む割合。投稿頻度の微調整用 |
+| `CHATTER_DEBUG` | 無効 | `1` で投稿しなかった理由を起動ログへ出す |
 | `NEWS_CHANNEL_ID` | (無効) | 設定するとニュース便が有効になる。投稿先チャンネル ID（`C…`） |
 | `NEWS_CRON` | `30 17 * * *` | ニュース便のスケジュール（Asia/Tokyo で評価）。平日のみなら `30 17 * * 1-5` |
 | `MEMORY_DIR` | `memory` | 長期記憶の保存先ディレクトリ |
@@ -128,6 +140,22 @@ npm run dev
 
 > 投票状態はインメモリ管理のため、ボット再起動で消える。消えた投票のボタンを押すと取り直しの案内が出る。
 
+### 雑談への自然な乱入
+
+`CHATTER_CHANNEL_ID` を設定すると、30分ごとにそのチャンネルの直近90分を確認する。人間の会話が続いている時だけ抽選し、既定では週4〜6回、9:00〜24:00の間に不規則に投稿する。
+
+返答は説明ではなくリアクション優先。「草」「それな」だけで済む空気なら本当にそれだけ投稿する。会話に自然に混ざれないとCodexが判断した場合は投稿しない。生成時のCodexは `read-only`、承認なし、Web検索なしの一時セッションで動かす。
+
+```bash
+# 直近の会話から候補を生成するだけ（Slackには投稿しない）
+npm run build && npm run chatter:once
+
+# 候補を実際に投稿する
+npm run chatter:once -- --post
+```
+
+週の投稿状況と最近の文面は `memory/chatter-state.json` に保存する。再起動しても週の上限や6時間のクールダウンは維持される。
+
 ### 夕方ニュース便
 
 `NEWS_CHANNEL_ID` を設定すると、毎日夕方（既定 17:30 JST）に今日のニュース3本を雑談ノリで自動投稿する。トピック選定には長期記憶（チャンネルの関心事）が反映される。
@@ -147,6 +175,7 @@ npm run news:once -- --dry-run
 ```
 memory/
   PORTAL.md              # 蒸留された知識。全プロンプトに毎回注入される「記憶の入口」
+  chatter-state.json     # 雑談機能の週次上限・最終投稿・最近の文面
   people/<user_id>.json  # 人物ごとのプロファイル・最終接触・最近の話題
   channels/<id>.json     # チャンネル情報・メンバー・最近の話題
   log/YYYY-MM.jsonl      # 全やり取りのログ
@@ -160,8 +189,8 @@ memory/
 
 ```
 src/
-  app/                 # エントリポイント（index.ts）と news の単発実行
-  services/            # ビジネスロジック（mention, research, hangout, polls, news, memory）
+  app/                 # エントリポイントと news / chatter の単発実行
+  services/            # mention, research, hangout, polls, chatter, news, memory
   integrations/        # Slack API / Block Kit ビルダー / Codex CLI / mrkdwn サニタイザ
 memory/                # 長期記憶（gitignore 済み）
 tools/slack_info.mjs   # エージェント用の Slack 情報取得 CLI（AGENTS.md 参照）
@@ -182,6 +211,7 @@ tools/slack_info.mjs   # エージェント用の Slack 情報取得 CLI（AGENT
 - **投票ボタンが反応しない**: Interactivity & Shortcuts が有効か確認（Socket Mode でも有効化は必要）
 - **チャンネル情報が取れない（`channel_info_error`）**: `channels:read` を付与。プライベートチャンネルは `groups:read` / `groups:history` も必要
 - **ニュース便が投稿されない**: 起動ログに `🗞 news digest scheduled: ...` が出ているか、ボットが対象チャンネルに invite 済みかを確認。`npm run news:once -- --dry-run` で生成だけ試すと切り分けが早い
+- **雑談が投稿されない**: `CHATTER_CHANNEL_ID`、チャンネルへの invite、`channels:history` を確認。普段は抽選で黙るため、`npm run chatter:once` で生成だけ試す
 - **記憶がおかしい**: `memory/PORTAL.md` を直接編集して修正。蒸留を止めたいときは `MEMORY_DISTILL=0`
 
 ## License
